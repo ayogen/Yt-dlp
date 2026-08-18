@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -48,7 +48,7 @@ jobs:
       - name: Build Debug APK
         env:
           GRADLE_OPTS: "-Djava.awt.headless=true -Xmx4096m"
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Verify APK generation
         run: |
