@@ -22,6 +22,20 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: Setup debug keystore
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > "$GITHUB_WORKSPACE/debug.keystore"
+          fi
+          if [ ! -f "$GITHUB_WORKSPACE/debug.keystore" ]; then
+            keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "Debug keystore verified at $GITHUB_WORKSPACE/debug.keystore"
+          ls -lh "$GITHUB_WORKSPACE/debug.keystore"
+
       - name: Setup Gradle wrapper
         run: |
           if [ -f "./gradlew" ]; then
@@ -32,6 +46,8 @@ jobs:
           fi
 
       - name: Build Debug APK
+        env:
+          GRADLE_OPTS: "-Djava.awt.headless=true -Xmx4096m"
         run: ./gradlew :app:assembleDebug --stacktrace
 
       - name: Verify APK generation
