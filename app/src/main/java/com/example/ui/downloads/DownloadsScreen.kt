@@ -85,6 +85,7 @@ import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
+import com.example.download.StorageUtils
 import java.io.File
 
 @Composable
@@ -187,15 +188,9 @@ fun DownloadsScreen(viewModel: MainViewModel) {
                         onDelete = { viewModel.deleteTask(task.id, false) },
                         onOpen = {
                             if (task.outputPath.isNotBlank()) {
-                                try {
-                                    val file = File(task.outputPath)
-                                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                                        setDataAndType(Uri.fromFile(file), if (task.mediaType == MediaType.AUDIO) "audio/*" else "video/*")
-                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    }
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    viewModel.showToast("Cannot open file: ${e.message}")
+                                val openResult = StorageUtils.openMediaFile(context, task.outputPath, task.mediaType)
+                                if (openResult.isFailure) {
+                                    viewModel.showToast("Cannot open file: ${openResult.exceptionOrNull()?.message}")
                                 }
                             }
                         },

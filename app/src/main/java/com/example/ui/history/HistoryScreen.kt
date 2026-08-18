@@ -91,6 +91,7 @@ import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
+import com.example.download.StorageUtils
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -284,25 +285,19 @@ fun HistoryScreen(viewModel: MainViewModel) {
                         formattedDate = dateFormat.format(Date(item.completedTimestamp)),
                         onOpen = {
                             if (!item.filePath.isNullOrBlank()) {
-                                try {
-                                    val file = File(item.filePath)
-                                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                                        setDataAndType(Uri.fromFile(file), if (item.mediaType == MediaType.AUDIO) "audio/*" else "video/*")
-                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    }
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    viewModel.showToast("Cannot open file: ${e.message}")
+                                val openResult = StorageUtils.openMediaFile(context, item.filePath, item.mediaType)
+                                if (openResult.isFailure) {
+                                    viewModel.showToast("Cannot open file: ${openResult.exceptionOrNull()?.message}")
                                 }
                             }
                         },
                         onShare = {
-                            val sendIntent = Intent().apply {
-                                action = Intent.ACTION_SEND
-                                putExtra(Intent.EXTRA_TEXT, "${item.title}\n${item.url}")
-                                type = "text/plain"
-                            }
-                            context.startActivity(Intent.createChooser(sendIntent, "Share Media Link"))
+                            StorageUtils.shareMediaFile(
+                                context = context,
+                                filePath = item.filePath ?: "",
+                                mediaType = item.mediaType,
+                                title = "${item.title}\n${item.url}"
+                            )
                         },
                         onCopyPath = {
                             viewModel.copyToClipboard(item.filePath ?: item.url, "Path / URL")

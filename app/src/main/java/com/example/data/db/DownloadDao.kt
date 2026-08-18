@@ -18,6 +18,9 @@ interface DownloadDao {
     @Query("SELECT * FROM download_tasks WHERE status IN ('QUEUED', 'ANALYZING', 'DOWNLOADING', 'PAUSED', 'PROCESSING') ORDER BY createdTimestamp ASC")
     fun getActiveAndQueuedTasksFlow(): Flow<List<DownloadTaskEntity>>
 
+    @Query("SELECT * FROM download_tasks WHERE status = 'QUEUED' ORDER BY createdTimestamp ASC")
+    suspend fun getQueuedTasks(): List<DownloadTaskEntity>
+
     @Query("SELECT * FROM download_tasks WHERE id = :id")
     suspend fun getTaskById(id: String): DownloadTaskEntity?
 
@@ -47,6 +50,14 @@ interface DownloadDao {
         status: DownloadStatus,
         errorMessage: String? = null,
         completedTime: Long? = null
+    )
+
+    @Query("UPDATE download_tasks SET status = :status, outputPath = :outputPath, completedTimestamp = :completedTime WHERE id = :id")
+    suspend fun updateTaskCompleted(
+        id: String,
+        status: DownloadStatus,
+        outputPath: String,
+        completedTime: Long
     )
 
     @Query("UPDATE download_tasks SET detailedLogs = detailedLogs || :logLine WHERE id = :id")

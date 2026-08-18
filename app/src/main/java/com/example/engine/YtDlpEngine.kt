@@ -6,6 +6,7 @@ import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
+import com.example.download.StorageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -58,8 +59,7 @@ class YtDlpEngine(private val context: Context) {
         val ffmpegStatus = FFmpegDetector.detect(context)
 
         // Determine destination file
-        val outputDir = File(context.filesDir, settings.downloadLocation.ifBlank { "downloads" })
-        if (!outputDir.exists()) outputDir.mkdirs()
+        val outputDir = StorageUtils.getDownloadDirectory(context, settings.downloadLocation.ifBlank { "VideoDownloader" })
 
         val resolvedExt = if (task.mediaType == MediaType.AUDIO) {
             task.targetContainer.ifBlank { "mp3" }

@@ -60,20 +60,17 @@ class DownloadManager(
 
                     if (currentlyRunning < maxConcurrent) {
                         val availableSlots = maxConcurrent - currentlyRunning
-                        // Fetch queued tasks
-                        val queuedTasks = downloadDao.getActiveAndQueuedTasksFlow()
-                        // Find first queued task not currently active
-                        database.downloadDao().let { dao ->
-                            // Look for QUEUED tasks
-                            val activeList = activeJobs.keys()
-                            // Process tasks that are QUEUED
-                            val allTasks = downloadDao.getTaskById("dummy") // check db
+                        val queuedTasks = downloadDao.getQueuedTasks()
+                        for (task in queuedTasks.take(availableSlots)) {
+                            if (!activeJobs.containsKey(task.id)) {
+                                startTaskExecution(task)
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    AppLogger.w("DownloadManager", "Queue loop error: ${e.message}")
+                    AppLogger.w("DownloadManager", "Queue loop warning: ${e.message}")
                 }
-                delay(1000)
+                delay(1500)
             }
         }
     }
@@ -92,27 +89,18 @@ class DownloadManager(
             val running = activeDownloadCount.get()
 
             if (running >= maxConcurrent) {
-                AppLogger.d("DownloadManager", "Max concurrency reached ($running / $maxConcurrent). Task will wait in queue.")
+                AppLogger.d("DownloadManager", "Max concurrency reached ($running / $maxConcurrent). Task queued.")
                 return@launch
             }
 
-            // We find any task with QUEUED status that doesn't have an active job
-            // Using a query or observing tasks
-            val queuedTask = findNextQueuedTask()
-            if (queuedTask != null && !activeJobs.containsKey(queuedTask.id)) {
-                startTaskExecution(queuedTask)
+            val queuedTasks = downloadDao.getQueuedTasks()
+            val available = maxConcurrent - running
+            for (task in queuedTasks.take(available)) {
+                if (!activeJobs.containsKey(task.id)) {
+                    startTaskExecution(task)
+                }
             }
         }
-    }
-
-    private suspend fun findNextQueuedTask(): DownloadTaskEntity? {
-        var result: DownloadTaskEntity? = null
-        try {
-            // Find in db
-            val list = downloadDao.getAllTasksFlow()
-            // We can query directly
-        } catch (e: Exception) {}
-        return null
     }
 
     fun startTaskExecution(task: DownloadTaskEntity) {
@@ -123,6 +111,9 @@ class DownloadManager(
             pausedFlags[task.id] = false
             cancelledFlags[task.id] = false
 
+            // Start foreground service for reliable background execution & notifications
+            DownloadForegroundService.startService(context)
+
             try {
                 downloadDao.updateTaskStatus(task.id, DownloadStatus.DOWNLOADING)
                 AppLogger.i("DownloadManager", "Started active download: ${task.title}", task.id)
@@ -132,14 +123,28 @@ class DownloadManager(
                     settings = _settingsFlow.value,
                     onProgress = { progress, downloaded, total, speed, eta ->
                         scope.launch {
+                            val isPaused = pausedFlags[task.id] == true
+                            val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
                             downloadDao.updateTaskProgress(
                                 id = task.id,
                                 progress = progress,
                                 downloadedBytes = downloaded,
                                 totalBytes = total,
-                                speed = speed,
-                                eta = eta,
-                                status = if (pausedFlags[task.id] == true) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
+                                speed = if (isPaused) 0.0 else speed,
+                                eta = if (isPaused) 0L else eta,
+                                status = currentStatus
+                            )
+
+                            // Update Foreground Notification
+                            DownloadForegroundService.updateProgress(
+                                context = context,
+                                taskId = task.id,
+                                title = task.title,
+                                progress = progress,
+                                downloaded = downloaded,
+                                total = total,
+                                speed = if (isPaused) 0.0 else speed,
+                                activeCount = activeDownloadCount.get()
                             )
                         }
                     },
@@ -152,11 +157,15 @@ class DownloadManager(
                     val fileObj = File(finalPath)
                     val finalSize = if (fileObj.exists()) fileObj.length() else task.totalBytes
 
-                    downloadDao.updateTaskStatus(
+                    downloadDao.updateTaskCompleted(
                         id = task.id,
                         status = DownloadStatus.COMPLETED,
+                        outputPath = finalPath,
                         completedTime = System.currentTimeMillis()
                     )
+
+                    // Notify Android MediaStore so file is immediately accessible to media apps
+                    StorageUtils.scanMediaFile(context, fileObj)
 
                     // Insert into History
                     downloadDao.insertHistory(
@@ -170,11 +179,11 @@ class DownloadManager(
                             mediaType = task.mediaType,
                             formatDescription = task.formatDescription,
                             completedTimestamp = System.currentTimeMillis(),
-                            uploader = "Media Uploader"
+                            uploader = "Media Creator"
                         )
                     )
 
-                    AppLogger.i("DownloadManager", "Task completed: ${task.title}", task.id)
+                    AppLogger.i("DownloadManager", "Task completed: ${task.title} -> $finalPath", task.id)
                 } else {
                     val ex = result.exceptionOrNull() ?: Exception("Unknown download error")
                     if (cancelledFlags[task.id] == true) {
@@ -197,7 +206,12 @@ class DownloadManager(
                 activeJobs.remove(task.id)
                 pausedFlags.remove(task.id)
                 cancelledFlags.remove(task.id)
-                activeDownloadCount.decrementAndGet()
+                val remaining = activeDownloadCount.decrementAndGet()
+
+                if (remaining <= 0) {
+                    DownloadForegroundService.stopService(context)
+                }
+
                 triggerQueueProcessing()
             }
         }
