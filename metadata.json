@@ -1,0 +1,8 @@
+{
+  "name": "Video Downloader",
+  "description": "Production-ready video and audio downloader powered by yt-dlp with queue management, format selection, playlists, and history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
