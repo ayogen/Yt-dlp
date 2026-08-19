@@ -154,8 +154,7 @@ class DownloadManager(
 
                 if (result.isSuccess) {
                     val finalPath = result.getOrNull() ?: task.outputPath
-                    val fileObj = File(finalPath)
-                    val finalSize = if (fileObj.exists()) fileObj.length() else task.totalBytes
+                    val finalSize = StorageUtils.getFileSize(context, finalPath).let { if (it > 0) it else task.totalBytes }
 
                     downloadDao.updateTaskCompleted(
                         id = task.id,
@@ -163,9 +162,6 @@ class DownloadManager(
                         outputPath = finalPath,
                         completedTime = System.currentTimeMillis()
                     )
-
-                    // Notify Android MediaStore so file is immediately accessible to media apps
-                    StorageUtils.scanMediaFile(context, fileObj)
 
                     // Insert into History
                     downloadDao.insertHistory(
@@ -267,8 +263,7 @@ class DownloadManager(
             cancelTask(taskId)
             val task = downloadDao.getTaskById(taskId)
             if (deleteFile && task != null && task.outputPath.isNotBlank()) {
-                val f = File(task.outputPath)
-                if (f.exists()) f.delete()
+                StorageUtils.deleteMediaFile(context, task.outputPath)
             }
             downloadDao.deleteTask(taskId)
             AppLogger.i("DownloadManager", "Deleted task $taskId", taskId)

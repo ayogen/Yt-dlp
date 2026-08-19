@@ -267,6 +267,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _toastMessage.value = "Settings saved successfully"
     }
 
+    fun onDownloadLocationSelected(treeUri: android.net.Uri) {
+        val success = com.example.download.StorageUtils.takePersistableUriPermission(getApplication(), treeUri)
+        val displayName = com.example.download.StorageUtils.getDisplayNameForTreeUri(getApplication(), treeUri.toString())
+        val updated = settings.value.copy(
+            downloadLocationUri = treeUri.toString(),
+            downloadLocationDisplayName = displayName
+        )
+        repository.updateSettings(updated)
+        if (success) {
+            _toastMessage.value = "Download location set to: $displayName"
+        } else {
+            _toastMessage.value = "Download location set to: $displayName (Permission requested)"
+        }
+    }
+
+    fun resetDownloadLocationToDefault() {
+        val updated = settings.value.copy(
+            downloadLocationUri = "",
+            downloadLocationDisplayName = "Default App Storage"
+        )
+        repository.updateSettings(updated)
+        _toastMessage.value = "Download location reset to default storage"
+    }
+
     fun updateYtDlpBinary() {
         viewModelScope.launch {
             _isUpdatingYtDlp.value = true

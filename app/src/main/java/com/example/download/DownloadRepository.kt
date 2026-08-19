@@ -1,5 +1,6 @@
 package com.example.download
 
+import android.content.Context
 import com.example.data.db.AppDatabase
 import com.example.data.model.AppSettings
 import com.example.data.model.DownloadHistoryEntity
@@ -8,12 +9,12 @@ import com.example.data.model.MediaMetadata
 import com.example.engine.YtDlpEngine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
-import java.io.File
 
 class DownloadRepository(
     private val database: AppDatabase,
     private val engine: YtDlpEngine,
-    private val downloadManager: DownloadManager
+    private val downloadManager: DownloadManager,
+    private val context: Context? = null
 ) {
     val allTasksFlow: Flow<List<DownloadTaskEntity>> = database.downloadDao().getAllTasksFlow()
     val allHistoryFlow: Flow<List<DownloadHistoryEntity>> = database.downloadDao().getAllHistoryFlow()
@@ -52,10 +53,12 @@ class DownloadRepository(
         downloadManager.clearFinished()
     }
 
-    suspend fun deleteHistory(id: String, filePath: String?, deleteFile: Boolean = false) {
+    suspend fun deleteHistory(id: String, filePath: String?, deleteFile: Boolean = false, appContext: Context? = null) {
         if (deleteFile && !filePath.isNullOrBlank()) {
-            val f = File(filePath)
-            if (f.exists()) f.delete()
+            val ctx = appContext ?: context
+            if (ctx != null) {
+                StorageUtils.deleteMediaFile(ctx, filePath)
+            }
         }
         database.downloadDao().deleteHistory(id)
     }

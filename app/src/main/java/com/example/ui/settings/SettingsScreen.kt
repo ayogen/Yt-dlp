@@ -1,5 +1,8 @@
 package com.example.ui.settings
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,11 +21,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cookie
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -41,7 +48,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AudioFormat
 import com.example.data.model.OutputContainer
+import com.example.download.StorageUtils
 import com.example.engine.FilenameFormatter
 import com.example.ui.MainViewModel
 import com.example.ui.components.TechnicalLogsDialog
@@ -77,6 +88,7 @@ import com.example.ui.theme.ElegantTextTertiary
 
 @Composable
 fun SettingsScreen(viewModel: MainViewModel) {
+    val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
     val versionInfo by viewModel.versionInfo.collectAsState()
     val ffmpegStatus by viewModel.ffmpegStatus.collectAsState()
@@ -88,6 +100,17 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
     // Local mutable copy of settings for editing
     var currentSettings by remember(settings) { mutableStateOf(settings) }
+
+    // SAF Document Tree Folder Launcher
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.onDownloadLocationSelected(uri)
+        }
+    }
+
+    val isSafActive = settings.downloadLocationUri.isNotBlank() && StorageUtils.isSafUriWritable(context, settings.downloadLocationUri)
 
     Column(
         modifier = Modifier
@@ -213,7 +236,148 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 2: Download Configuration
+        // Section 2: Storage & Download Location (SAF)
+        SettingsSectionHeader(icon = Icons.Default.Folder, title = "Storage & Download Location")
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
+            shape = RoundedCornerShape(16.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = Brush.verticalGradient(listOf(ElegantDarkBorder, Color.Transparent))),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Root Download Location",
+                            fontWeight = FontWeight.Bold,
+                            color = ElegantTextPrimary,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isSafActive) {
+                                "Custom SAF Root: ${settings.downloadLocationDisplayName}"
+                            } else {
+                                "Default Storage (App Isolated / Internal)"
+                            },
+                            color = if (isSafActive) ElegantGreen else ElegantLavenderPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Surface(
+                        color = if (isSafActive) ElegantGreen.copy(alpha = 0.15f) else ElegantDarkSurfaceVariant,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isSafActive) Icons.Default.CheckCircle else Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = if (isSafActive) ElegantGreen else ElegantTextSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isSafActive) "SAF ACTIVE" else "DEFAULT",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSafActive) ElegantGreen else ElegantTextSecondary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "Select one root directory using Android Storage Access Framework (SAF). Subfolders (Video/, Music/, Audio/, Subtitles/, Images/, Other/) are automatically created inside your chosen directory.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ElegantTextSecondary,
+                    lineHeight = 16.sp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Action Buttons for Folder Selection
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick = { folderPickerLauncher.launch(null) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElegantLavenderPrimary,
+                            contentColor = ElegantLavenderOnPrimary
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("choose_download_location_button")
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isSafActive) "Change Folder" else "Select SAF Folder",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    if (isSafActive) {
+                        OutlinedButton(
+                            onClick = { viewModel.resetDownloadLocationToDefault() },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("reset_download_location_button")
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Reset", fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // Subfolders mapping visual explanation
+                Spacer(modifier = Modifier.height(14.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF141218))
+                        .padding(10.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "Automatic Media Subfolder Routing:",
+                            fontSize = 10.sp,
+                            color = ElegantTextTertiary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "• Video/ (MP4, MKV, WebM videos)\n• Music/ (MP3, M4A, FLAC, AAC tracks)\n• Audio/ (Opus, WAV, general audio)\n• Subtitles/ (.vtt, .srt tracks)\n• Images/ (Thumbnails, cover art)",
+                            fontSize = 11.sp,
+                            color = ElegantTextSecondary,
+                            lineHeight = 16.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // Section 3: Download Configuration
         SettingsSectionHeader(icon = Icons.Default.Download, title = "Download Configuration")
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -315,7 +479,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 3: Filename Formatting
+        // Section 4: Filename Formatting
         SettingsSectionHeader(icon = Icons.Default.AutoFixHigh, title = "Filename Template")
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -407,7 +571,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 4: Advanced & Cookies
+        // Section 5: Advanced & Cookies
         SettingsSectionHeader(icon = Icons.Default.Cookie, title = "Authentication & CLI Arguments")
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -492,7 +656,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 5: Diagnostics & Live Logs
+        // Section 6: Diagnostics & Live Logs
         SettingsSectionHeader(icon = Icons.Default.ListAlt, title = "Diagnostics & System Logs")
         Spacer(modifier = Modifier.height(8.dp))
 

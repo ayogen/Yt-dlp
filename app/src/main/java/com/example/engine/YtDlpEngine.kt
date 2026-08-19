@@ -58,9 +58,7 @@ class YtDlpEngine(private val context: Context) {
         val binaryFile = YtDlpBinaryManager.getBinaryFile(context)
         val ffmpegStatus = FFmpegDetector.detect(context)
 
-        // Determine destination file
-        val outputDir = StorageUtils.getDownloadDirectory(context, settings.downloadLocation.ifBlank { "VideoDownloader" })
-
+        // Determine staging file location
         val resolvedExt = if (task.mediaType == MediaType.AUDIO) {
             task.targetContainer.ifBlank { "mp3" }
         } else {
@@ -75,12 +73,37 @@ class YtDlpEngine(private val context: Context) {
             ext = resolvedExt
         )
 
-        val outputFile = File(outputDir, filename)
+        // If SAF is configured, download to staging first, then export to SAF subfolder
+        val isSafConfigured = settings.downloadLocationUri.isNotBlank() && StorageUtils.isSafUriWritable(context, settings.downloadLocationUri)
+        val stagingDir = if (isSafConfigured) {
+            StorageUtils.getStagingDirectory(context)
+        } else {
+            val subfolder = StorageUtils.getSubfolderForMediaType(task.mediaType, resolvedExt)
+            StorageUtils.getFallbackDownloadDirectory(context, subfolder)
+        }
+
+        val stagingFile = File(stagingDir, filename)
+
+        // Helper to finalize downloaded file
+        fun finalizeDownload(completedFile: File): Result<String> {
+            return if (isSafConfigured) {
+                StorageUtils.exportFileToSaf(
+                    context = context,
+                    sourceFile = completedFile,
+                    treeUriString = settings.downloadLocationUri,
+                    mediaType = task.mediaType,
+                    customFilename = filename
+                )
+            } else {
+                StorageUtils.scanMediaFile(context, completedFile)
+                Result.success(completedFile.absolutePath)
+            }
+        }
 
         // If CLI binary is available and executable, run CLI
         if (binaryFile.exists() && binaryFile.canExecute()) {
             val formatArg = buildFormatArgument(task, settings)
-            val outputTemplate = outputFile.absolutePath
+            val outputTemplate = stagingFile.absolutePath
 
             val cliResult = YtDlpProcessRunner.runDownloadCli(
                 taskId = taskId,
@@ -96,7 +119,9 @@ class YtDlpEngine(private val context: Context) {
             )
 
             if (cliResult.isSuccess) {
-                return@withContext cliResult
+                val producedPath = cliResult.getOrNull() ?: stagingFile.absolutePath
+                val producedFile = File(producedPath)
+                return@withContext finalizeDownload(producedFile)
             } else {
                 AppLogger.w("YtDlpEngine", "CLI download failed, falling back to embedded streaming downloader: ${cliResult.exceptionOrNull()?.message}", taskId)
             }
@@ -104,15 +129,23 @@ class YtDlpEngine(private val context: Context) {
 
         // Use embedded streaming downloader
         val estimatedSize = if (task.totalBytes > 0) task.totalBytes else 75_000_000L
-        return@withContext EmbeddedExtractorEngine.downloadDirectStream(
+        val streamResult = EmbeddedExtractorEngine.downloadDirectStream(
             taskId = taskId,
             url = task.url,
-            destinationFile = outputFile,
+            destinationFile = stagingFile,
             targetTotalBytes = estimatedSize,
             onProgress = onProgress,
             isCancelled = isCancelled,
             isPaused = isPaused
         )
+
+        if (streamResult.isSuccess) {
+            val producedPath = streamResult.getOrNull() ?: stagingFile.absolutePath
+            val producedFile = File(producedPath)
+            return@withContext finalizeDownload(producedFile)
+        } else {
+            return@withContext streamResult
+        }
     }
 
     fun classifyError(e: Throwable): EngineDiagnosticError {

@@ -32,7 +32,7 @@ class YtDlpApplication : Application(), ImageLoaderFactory {
 
         engine = YtDlpEngine(this)
         downloadManager = DownloadManager(this, database, engine)
-        repository = DownloadRepository(database, engine, downloadManager)
+        repository = DownloadRepository(database, engine, downloadManager, this)
     }
 
     override fun newImageLoader(): ImageLoader {

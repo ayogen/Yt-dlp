@@ -294,7 +294,7 @@ fun HistoryScreen(viewModel: MainViewModel) {
                         onShare = {
                             StorageUtils.shareMediaFile(
                                 context = context,
-                                filePath = item.filePath ?: "",
+                                pathOrUri = item.filePath ?: "",
                                 mediaType = item.mediaType,
                                 title = "${item.title}\n${item.url}"
                             )
