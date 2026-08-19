@@ -4,27 +4,20 @@ import com.example.data.model.FormatInfo
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.data.model.SubtitleTrack
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
-import java.util.concurrent.ConcurrentHashMap
 
 object YtDlpProcessRunner {
-    private val activeProcesses = ConcurrentHashMap<String, Process>()
-
     fun cancelTaskProcess(taskId: String) {
-        activeProcesses[taskId]?.let { process ->
-            try {
-                process.destroyForcibly()
-                AppLogger.i("YtDlpProcessRunner", "Process forcibly terminated for task $taskId", taskId)
-            } catch (e: Exception) {
-                AppLogger.w("YtDlpProcessRunner", "Error killing process for task $taskId: ${e.message}", taskId)
-            } finally {
-                activeProcesses.remove(taskId)
-            }
+        try {
+            YoutubeDL.getInstance().destroyProcessById(taskId)
+            AppLogger.i("YtDlpProcessRunner", "Process terminated for task $taskId", taskId)
+        } catch (e: Exception) {
+            AppLogger.w("YtDlpProcessRunner", "Error killing process for task $taskId: ${e.message}", taskId)
         }
     }
 
@@ -35,35 +28,44 @@ object YtDlpProcessRunner {
         customArgs: String = ""
     ): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         try {
-            val args = mutableListOf(binaryPath, "--dump-single-json", "--no-warnings", "--flat-playlist")
+            val request = YoutubeDLRequest(url)
+            request.addOption("--dump-single-json")
+            request.addOption("--no-warnings")
+            request.addOption("--flat-playlist")
+
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
-                args.add("--cookies")
-                args.add(cookiesPath)
+                request.addOption("--cookies", cookiesPath)
             }
             if (customArgs.isNotBlank()) {
-                args.addAll(customArgs.split("\\s+".toRegex()).filter { it.isNotBlank() })
+                val parts = customArgs.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                var i = 0
+                while (i < parts.size) {
+                    val opt = parts[i]
+                    if (opt.startsWith("-") && i + 1 < parts.size && !parts[i + 1].startsWith("-")) {
+                        request.addOption(opt, parts[i + 1])
+                        i += 2
+                    } else {
+                        request.addOption(opt)
+                        i++
+                    }
+                }
             }
-            args.add(url)
 
-            AppLogger.d("YtDlpProcessRunner", "Executing metadata command: ${args.joinToString(" ")}")
-            val pb = ProcessBuilder(args)
-            val process = pb.start()
+            AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url")
+            val response = YoutubeDL.getInstance().execute(request)
+            val stdout = response.out
 
-            val stdout = process.inputStream.bufferedReader().readText()
-            val stderr = process.errorStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
-
-            if (exitCode != 0 || stdout.isBlank()) {
-                val errorMsg = if (stderr.isNotBlank()) stderr.trim() else "yt-dlp exited with code $exitCode"
-                AppLogger.e("YtDlpProcessRunner", "Metadata extraction failed: $errorMsg")
-                return@withContext Result.failure(Exception(errorMsg))
+            if (stdout.isNullOrBlank()) {
+                AppLogger.e("YtDlpProcessRunner", "Metadata extraction failed: empty output")
+                return@withContext Result.failure(Exception("yt-dlp returned empty metadata output"))
             }
 
             val json = JSONObject(stdout)
             val metadata = parseYtDlpJson(json, url)
             Result.success(metadata)
         } catch (e: Exception) {
-            AppLogger.e("YtDlpProcessRunner", "CLI Execution error: ${e.message}")
+            val msg = e.message ?: e.javaClass.simpleName
+            AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)
         }
     }
@@ -85,20 +87,14 @@ object YtDlpProcessRunner {
         onProgress: (progress: Float, downloaded: Long, total: Long, speed: Double, eta: Long) -> Unit,
         isCancelled: () -> Boolean
     ): Result<String> = withContext(Dispatchers.IO) {
-        var process: Process? = null
         try {
-            val args = mutableListOf(
-                binaryPath,
-                "--newline",
-                "--progress-template",
-                "P|%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
-            )
+            val request = YoutubeDLRequest(url)
+            request.addOption("--newline")
 
             // Audio extraction vs Video muxing configuration
             if (mediaType == MediaType.AUDIO) {
-                args.add("-f")
-                args.add("bestaudio/best")
-                args.add("-x")
+                request.addOption("-f", "bestaudio/best")
+                request.addOption("-x")
                 val cleanAudioFormat = when (targetContainer.lowercase()) {
                     "mp3" -> "mp3"
                     "m4a", "aac" -> "m4a"
@@ -107,139 +103,97 @@ object YtDlpProcessRunner {
                     "wav" -> "wav"
                     else -> "mp3"
                 }
-                args.add("--audio-format")
-                args.add(cleanAudioFormat)
-                args.add("--audio-quality")
-                args.add("${audioBitrate ?: 320}k")
+                request.addOption("--audio-format", cleanAudioFormat)
+                request.addOption("--audio-quality", "${audioBitrate ?: 320}k")
             } else {
-                args.add("-f")
-                args.add(formatSpec)
+                request.addOption("-f", formatSpec)
                 val cleanVideoContainer = when (targetContainer.lowercase()) {
                     "mp4" -> "mp4"
                     "mkv" -> "mkv"
                     "webm" -> "webm"
                     else -> "mp4"
                 }
-                args.add("--merge-output-format")
-                args.add(cleanVideoContainer)
+                request.addOption("--merge-output-format", cleanVideoContainer)
             }
 
             // Output path
-            args.add("-o")
-            args.add(outputTemplate)
-
-            // Real FFmpeg location
-            if (!ffmpegPath.isNullOrBlank()) {
-                val ffmpegFile = File(ffmpegPath)
-                if (ffmpegFile.exists()) {
-                    val locationArg = ffmpegFile.parentFile?.absolutePath ?: ffmpegPath
-                    args.add("--ffmpeg-location")
-                    args.add(locationArg)
-                }
-            }
+            request.addOption("-o", outputTemplate)
 
             // Subtitle & Thumbnail embedding
             if (embedSubs) {
-                args.add("--embed-subs")
-                args.add("--write-subs")
-                args.add("--sub-langs")
-                args.add("all")
+                request.addOption("--embed-subs")
+                request.addOption("--write-subs")
+                request.addOption("--sub-langs", "all")
             }
             if (embedThumbnail) {
-                args.add("--embed-thumbnail")
+                request.addOption("--embed-thumbnail")
             }
 
             // Cookies
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
-                args.add("--cookies")
-                args.add(cookiesPath)
+                request.addOption("--cookies", cookiesPath)
             }
 
             // Custom user arguments
             if (customArgs.isNotBlank()) {
-                args.addAll(customArgs.split("\\s+".toRegex()).filter { it.isNotBlank() })
-            }
-
-            args.add(url)
-
-            AppLogger.i("YtDlpProcessRunner", "Starting yt-dlp download: ${args.joinToString(" ")}", taskId)
-
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            process = pb.start()
-            activeProcesses[taskId] = process
-
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            var line: String?
-            var downloadedFile: String = outputTemplate
-            val lastOutputLines = mutableListOf<String>()
-
-            while (reader.readLine().also { line = it } != null) {
-                if (isCancelled()) {
-                    process.destroyForcibly()
-                    activeProcesses.remove(taskId)
-                    return@withContext Result.failure(Exception("Download cancelled by user"))
-                }
-
-                line?.let { l ->
-                    lastOutputLines.add(l)
-                    if (lastOutputLines.size > 20) lastOutputLines.removeAt(0)
-
-                    if (l.startsWith("P|")) {
-                        val parts = l.split("|")
-                        if (parts.size >= 6) {
-                            val percentStr = parts[1].replace("%", "").trim()
-                            val prog = percentStr.toFloatOrNull() ?: 0f
-                            val downBytes = parseBytes(parts[2])
-                            val totalBytes = parseBytes(parts[3])
-                            val speed = parseSpeed(parts[4])
-                            val eta = parseEtaSeconds(parts[5])
-                            onProgress(prog, downBytes, totalBytes, speed, eta)
-                        }
-                    } else if (l.contains("[download] Destination:")) {
-                        downloadedFile = l.substringAfter("[download] Destination:").trim()
-                    } else if (l.contains("[Merger] Merging formats into")) {
-                        val merged = l.substringAfter("[Merger] Merging formats into").replace("\"", "").trim()
-                        if (merged.isNotBlank()) downloadedFile = merged
-                    } else if (l.contains("[ExtractAudio] Destination:")) {
-                        val audioDest = l.substringAfter("[ExtractAudio] Destination:").trim()
-                        if (audioDest.isNotBlank()) downloadedFile = audioDest
-                    }
-                }
-            }
-
-            val exitCode = process.waitFor()
-            activeProcesses.remove(taskId)
-
-            if (exitCode == 0) {
-                // If downloaded file doesn't exist directly at tracked path, search parent directory for matching prefix
-                val targetFile = File(downloadedFile)
-                if (targetFile.exists() && targetFile.length() > 0) {
-                    Result.success(targetFile.absolutePath)
-                } else {
-                    val fallbackFile = File(outputTemplate)
-                    if (fallbackFile.exists() && fallbackFile.length() > 0) {
-                        Result.success(fallbackFile.absolutePath)
+                val parts = customArgs.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                var i = 0
+                while (i < parts.size) {
+                    val opt = parts[i]
+                    if (opt.startsWith("-") && i + 1 < parts.size && !parts[i + 1].startsWith("-")) {
+                        request.addOption(opt, parts[i + 1])
+                        i += 2
                     } else {
-                        // Check directory for any produced file matching the base name
-                        val parentDir = fallbackFile.parentFile
-                        val baseName = fallbackFile.nameWithoutExtension
-                        val matched = parentDir?.listFiles()?.firstOrNull { it.name.startsWith(baseName) && it.length() > 0 }
-                        if (matched != null) {
-                            Result.success(matched.absolutePath)
-                        } else {
-                            Result.failure(Exception("yt-dlp finished but output media file was not found on disk."))
-                        }
+                        request.addOption(opt)
+                        i++
                     }
                 }
+            }
+
+            AppLogger.i("YtDlpProcessRunner", "Starting yt-dlp download for $url", taskId)
+
+            var downloadedFile: String = outputTemplate
+
+            val response = YoutubeDL.getInstance().execute(request, taskId) { progress, etaInSeconds, line ->
+                if (isCancelled()) {
+                    YoutubeDL.getInstance().destroyProcessById(taskId)
+                }
+
+                if (line.contains("[download] Destination:")) {
+                    downloadedFile = line.substringAfter("[download] Destination:").trim()
+                } else if (line.contains("[Merger] Merging formats into")) {
+                    val merged = line.substringAfter("[Merger] Merging formats into").replace("\"", "").trim()
+                    if (merged.isNotBlank()) downloadedFile = merged
+                } else if (line.contains("[ExtractAudio] Destination:")) {
+                    val audioDest = line.substringAfter("[ExtractAudio] Destination:").trim()
+                    if (audioDest.isNotBlank()) downloadedFile = audioDest
+                }
+
+                onProgress(progress, 0L, 0L, 0.0, etaInSeconds)
+            }
+
+            // Check if downloaded file exists
+            val targetFile = File(downloadedFile)
+            if (targetFile.exists() && targetFile.length() > 0) {
+                Result.success(targetFile.absolutePath)
             } else {
-                val errorLog = lastOutputLines.joinToString("\n")
-                AppLogger.e("YtDlpProcessRunner", "yt-dlp failed (code $exitCode):\n$errorLog", taskId)
-                Result.failure(Exception("yt-dlp download failed with exit code $exitCode:\n$errorLog"))
+                val fallbackFile = File(outputTemplate)
+                if (fallbackFile.exists() && fallbackFile.length() > 0) {
+                    Result.success(fallbackFile.absolutePath)
+                } else {
+                    val parentDir = fallbackFile.parentFile
+                    val baseName = fallbackFile.nameWithoutExtension
+                    val matched = parentDir?.listFiles()?.firstOrNull { it.name.startsWith(baseName) && it.length() > 0 }
+                    if (matched != null) {
+                        Result.success(matched.absolutePath)
+                    } else {
+                        Result.failure(Exception("yt-dlp finished but output media file was not found on disk."))
+                    }
+                }
             }
         } catch (e: Exception) {
-            activeProcesses.remove(taskId)
-            AppLogger.e("YtDlpProcessRunner", "Process runner exception: ${e.message}", taskId)
+            val msg = e.message ?: e.javaClass.simpleName
+            AppLogger.e("YtDlpProcessRunner", "Process runner exception: $msg", taskId)
             Result.failure(e)
         }
     }
@@ -328,37 +282,5 @@ object YtDlpProcessRunner {
             subtitles = subtitlesList,
             extractorName = json.optString("extractor", "yt-dlp")
         )
-    }
-
-    private fun parseBytes(str: String): Long {
-        val s = str.trim()
-        val num = s.filter { it.isDigit() || it == '.' }.toDoubleOrNull() ?: return 0L
-        return when {
-            s.endsWith("GiB", true) || s.endsWith("GB", true) -> (num * 1024 * 1024 * 1024).toLong()
-            s.endsWith("MiB", true) || s.endsWith("MB", true) -> (num * 1024 * 1024).toLong()
-            s.endsWith("KiB", true) || s.endsWith("KB", true) -> (num * 1024).toLong()
-            else -> num.toLong()
-        }
-    }
-
-    private fun parseSpeed(str: String): Double {
-        val s = str.trim().removeSuffix("/s")
-        val num = s.filter { it.isDigit() || it == '.' }.toDoubleOrNull() ?: return 0.0
-        return when {
-            s.endsWith("GiB", true) || s.endsWith("GB", true) -> num * 1024 * 1024 * 1024
-            s.endsWith("MiB", true) || s.endsWith("MB", true) -> num * 1024 * 1024
-            s.endsWith("KiB", true) || s.endsWith("KB", true) -> num * 1024
-            else -> num
-        }
-    }
-
-    private fun parseEtaSeconds(str: String): Long {
-        val parts = str.trim().split(":")
-        return when (parts.size) {
-            3 -> (parts[0].toLongOrNull() ?: 0L) * 3600 + (parts[1].toLongOrNull() ?: 0L) * 60 + (parts[2].toLongOrNull() ?: 0L)
-            2 -> (parts[0].toLongOrNull() ?: 0L) * 60 + (parts[1].toLongOrNull() ?: 0L)
-            1 -> parts[0].toLongOrNull() ?: 0L
-            else -> 0L
-        }
     }
 }

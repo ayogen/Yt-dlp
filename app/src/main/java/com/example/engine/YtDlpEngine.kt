@@ -21,25 +21,24 @@ class YtDlpEngine(private val context: Context) {
 
     suspend fun analyzeUrl(url: String, settings: AppSettings): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         AppLogger.i("YtDlpEngine", "Starting URL analysis for: $url")
-        val binaryFile = YtDlpBinaryManager.getBinaryFile(context)
 
-        // Try CLI runner first if binary exists and can execute
-        if (binaryFile.exists() && binaryFile.canExecute()) {
+        // Try yt-dlp first if runtime is ready
+        if (YtDlpBinaryManager.isReady(context)) {
             val cliResult = YtDlpProcessRunner.extractMetadataCli(
-                binaryPath = binaryFile.absolutePath,
+                binaryPath = "",
                 url = url,
                 cookiesPath = settings.cookiesFilePath.ifBlank { null },
                 customArgs = settings.customYtDlpArgs
             )
             if (cliResult.isSuccess) {
-                AppLogger.i("YtDlpEngine", "Metadata extracted via CLI runner")
+                AppLogger.i("YtDlpEngine", "Metadata extracted via yt-dlp engine")
                 return@withContext cliResult
             } else {
-                AppLogger.w("YtDlpEngine", "CLI extraction error, falling back: ${cliResult.exceptionOrNull()?.message}")
+                AppLogger.w("YtDlpEngine", "yt-dlp extraction error, falling back to embedded extractor: ${cliResult.exceptionOrNull()?.message}")
             }
         }
 
-        // Use direct/webpage extractor
+        // Fallback: Use embedded extractor engine
         EmbeddedExtractorEngine.analyzeUrl(url)
     }
 
@@ -53,7 +52,7 @@ class YtDlpEngine(private val context: Context) {
         val taskId = task.id
         AppLogger.i("YtDlpEngine", "Executing download for task: ${task.title} ($taskId)", taskId)
 
-        val binaryFile = YtDlpBinaryManager.getBinaryFile(context)
+        val isYtDlpReady = YtDlpBinaryManager.isReady(context)
         val ffmpegStatus = FFmpegDetector.detect(context)
 
         // Determine target file extension
@@ -122,13 +121,13 @@ class YtDlpEngine(private val context: Context) {
             }
         }
 
-        // If CLI binary is available and executable, run CLI
-        if (binaryFile.exists() && binaryFile.canExecute()) {
+        // If yt-dlp runtime is ready, use yt-dlp
+        if (isYtDlpReady) {
             val outputTemplate = stagingFile.absolutePath
 
             val cliResult = YtDlpProcessRunner.runDownloadCli(
                 taskId = taskId,
-                binaryPath = binaryFile.absolutePath,
+                binaryPath = "",
                 url = task.url,
                 mediaType = task.mediaType,
                 formatSpec = formatArg,
@@ -149,13 +148,13 @@ class YtDlpEngine(private val context: Context) {
                 val producedFile = File(producedPath)
                 return@withContext finalizeDownload(producedFile)
             } else {
-                val cliError = cliResult.exceptionOrNull() ?: Exception("CLI execution failed")
-                AppLogger.e("YtDlpEngine", "CLI download failed: ${cliError.message}", taskId)
+                val cliError = cliResult.exceptionOrNull() ?: Exception("yt-dlp execution failed")
+                AppLogger.e("YtDlpEngine", "yt-dlp download failed: ${cliError.message}", taskId)
                 return@withContext Result.failure(cliError)
             }
         }
 
-        // If CLI is not present, only direct HTTP media stream URLs are allowed
+        // If yt-dlp is not ready, check if direct HTTP media stream URL
         if (EmbeddedExtractorEngine.isDirectMediaUrl(task.url)) {
             val streamResult = EmbeddedExtractorEngine.downloadDirectStream(
                 taskId = taskId,
@@ -177,7 +176,7 @@ class YtDlpEngine(private val context: Context) {
         }
 
         return@withContext Result.failure(
-            IllegalStateException("yt-dlp binary is not installed or executable. Please install or update yt-dlp in Settings.")
+            IllegalStateException("yt-dlp engine is not initialized. Please complete engine setup in Settings.")
         )
     }
 
@@ -210,9 +209,9 @@ class YtDlpEngine(private val context: Context) {
             }
             msg.contains("ffmpeg", ignoreCase = true) -> {
                 EngineDiagnosticError(
-                    title = "FFmpeg Post-Processing Required",
-                    reason = "A real FFmpeg binary is required to merge video and audio streams or convert audio formats.",
-                    suggestedAction = "Go to Settings > FFmpeg Status and tap 'Install FFmpeg' to set up the executable binary.",
+                    title = "FFmpeg Processing Required",
+                    reason = "FFmpeg is required to merge video and audio streams or convert audio formats.",
+                    suggestedAction = "Go to Settings > FFmpeg Status and tap 'Install FFmpeg' to set up.",
                     technicalDetails = msg
                 )
             }

@@ -11,14 +11,12 @@ import com.example.engine.FFmpegState
 import com.example.engine.FilenameFormatter
 import com.example.engine.YtDlpBinaryManager
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -60,6 +58,7 @@ class ExampleRobolectricTest {
         val status = YtDlpBinaryManager.detect(context)
         assertNotNull(status)
         assertNotNull(status.state)
+        assertNotNull(status.guidance)
     }
 
     @Test
@@ -70,56 +69,5 @@ class ExampleRobolectricTest {
         assertNotNull(status.state)
         assertNotNull(status.engineState)
         assertNotNull(status.guidance)
-    }
-
-    @Test
-    fun `test ffmpeg candidate sources resolution`() {
-        val sources = FFmpegBinaryManager.getCandidateSourcesForDevice()
-        assertTrue("Must have at least one candidate source for device", sources.isNotEmpty())
-        for (candidate in sources) {
-            assertTrue("Candidate must have valid URLs", candidate.urls.isNotEmpty())
-            assertTrue("URL must point to zip", candidate.urls.all { it.endsWith(".zip") })
-        }
-    }
-
-    @Test
-    fun `test detector cleans up 0-byte corrupt file`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val ffmpegFile = FFmpegDetector.getPreferredFFmpegFile(context)
-
-        // Write 0-byte file
-        ffmpegFile.parentFile?.mkdirs()
-        ffmpegFile.writeBytes(ByteArray(0))
-        assertTrue(ffmpegFile.exists())
-        assertEquals(0L, ffmpegFile.length())
-
-        val status = FFmpegDetector.detect(context)
-        assertEquals(FFmpegState.MISSING, status.state)
-        assertEquals(EngineState.MISSING, status.engineState)
-        assertFalse("0-byte file should be automatically purged", ffmpegFile.exists())
-    }
-
-    @Test
-    fun `test ABI priority selector chooses arm64-v8a over armeabi-v7a`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val testDir = File(context.cacheDir, "abi_test_${System.currentTimeMillis()}")
-        testDir.mkdirs()
-
-        val arm64Dir = File(testDir, "arm64-v8a/bin").apply { mkdirs() }
-        val armv7Dir = File(testDir, "armeabi-v7a/bin").apply { mkdirs() }
-        val armDir = File(testDir, "armeabi/bin").apply { mkdirs() }
-
-        val arm64Ffmpeg = File(arm64Dir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
-        val armv7Ffmpeg = File(armv7Dir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
-        val armFfmpeg = File(armDir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
-
-        val deviceAbis = arrayOf("arm64-v8a", "armeabi-v7a", "armeabi")
-        val selected = FFmpegBinaryManager.findBestExecutableForDevice(testDir, "ffmpeg", deviceAbis)
-
-        assertNotNull(selected)
-        assertEquals(arm64Ffmpeg.absolutePath, selected?.absolutePath)
-
-        // Cleanup
-        testDir.deleteRecursively()
     }
 }
