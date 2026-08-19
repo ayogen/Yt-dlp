@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.AudioFormat
 import com.example.data.model.OutputContainer
 import com.example.download.StorageUtils
+import com.example.engine.FFmpegState
 import com.example.engine.FilenameFormatter
 import com.example.ui.MainViewModel
 import com.example.ui.components.TechnicalLogsDialog
@@ -82,6 +84,7 @@ import com.example.ui.theme.ElegantDarkSurfaceVariant
 import com.example.ui.theme.ElegantGreen
 import com.example.ui.theme.ElegantLavenderOnPrimary
 import com.example.ui.theme.ElegantLavenderPrimary
+import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
@@ -94,6 +97,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val ffmpegStatus by viewModel.ffmpegStatus.collectAsState()
     val isUpdating by viewModel.isUpdatingYtDlp.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
+    val isUpdatingFFmpeg by viewModel.isUpdatingFFmpeg.collectAsState()
+    val ffmpegUpdateProgress by viewModel.ffmpegUpdateProgress.collectAsState()
     val logs by viewModel.logs.collectAsState()
 
     var showLogsDialog by remember { mutableStateOf(false) }
@@ -195,12 +200,19 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // FFmpeg Integration Status
+                val ffmpegState = ffmpegStatus?.state ?: FFmpegState.MISSING
+                val ffmpegColor = when (ffmpegState) {
+                    FFmpegState.AVAILABLE -> ElegantGreen
+                    FFmpegState.MISSING -> ElegantAmber
+                    FFmpegState.INVALID_NOT_EXECUTABLE -> ElegantRed
+                }
+
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "FFmpeg Status: ",
@@ -208,28 +220,86 @@ fun SettingsScreen(viewModel: MainViewModel) {
                                 color = ElegantTextPrimary,
                                 fontSize = 13.sp
                             )
-                            val isAvail = ffmpegStatus?.isAvailable == true
                             Text(
-                                text = if (isAvail) "Available" else "Built-in Extractor Mode",
-                                color = if (isAvail) ElegantGreen else ElegantAmber,
+                                text = ffmpegState.displayName,
+                                color = ffmpegColor,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp
                             )
                         }
+
+                        if (ffmpegStatus?.version != null) {
+                            Text(
+                                text = ffmpegStatus?.version ?: "",
+                                color = ElegantTextTertiary,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1
+                            )
+                        }
+
+                        if (!ffmpegStatus?.binaryPath.isNullOrBlank()) {
+                            Text(
+                                text = "Path: ${ffmpegStatus?.binaryPath}",
+                                color = ElegantTextTertiary,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1
+                            )
+                        }
+
                         Text(
-                            text = if (ffmpegStatus?.isAvailable == true) {
-                                "Capable of muxing independent video + audio streams"
-                            } else {
-                                "Streams will be downloaded in direct or pre-muxed container format"
-                            },
+                            text = ffmpegStatus?.guidance ?: "Checking FFmpeg executable status...",
                             color = ElegantTextSecondary,
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
 
-                    IconButton(onClick = { viewModel.refreshDiagnostics() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh FFmpeg", tint = ElegantLavenderPrimary)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { viewModel.refreshDiagnostics() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh FFmpeg", tint = ElegantLavenderPrimary)
+                        }
+
+                        Button(
+                            onClick = { viewModel.installOrUpdateFFmpeg() },
+                            enabled = !isUpdatingFFmpeg,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (ffmpegState == FFmpegState.AVAILABLE) ElegantDarkSurfaceVariant else ElegantLavenderPrimary,
+                                contentColor = if (ffmpegState == FFmpegState.AVAILABLE) ElegantTextPrimary else ElegantLavenderOnPrimary
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            if (isUpdatingFFmpeg) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ElegantLavenderPrimary
+                                )
+                            } else {
+                                Text(
+                                    text = if (ffmpegState == FFmpegState.AVAILABLE) "Reinstall" else "Install",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
+                }
+
+                if (isUpdatingFFmpeg) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { ffmpegUpdateProgress / 100f },
+                        color = ElegantLavenderPrimary,
+                        trackColor = ElegantDarkSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                    )
                 }
             }
         }

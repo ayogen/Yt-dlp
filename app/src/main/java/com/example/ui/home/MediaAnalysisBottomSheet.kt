@@ -278,7 +278,7 @@ fun MediaAnalysisBottomSheet(
                                     fontSize = 11.sp
                                 )
                                 Text(
-                                    text = selectedFormat?.displayFileSize ?: "~45.0 MB",
+                                    text = selectedFormat?.displayFileSize ?: "Unknown size",
                                     color = ElegantLavenderPrimary,
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
@@ -286,7 +286,7 @@ fun MediaAnalysisBottomSheet(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "• Stream muxing enabled",
+                                    text = "• FFmpeg Stream Muxing",
                                     color = ElegantTextTertiary,
                                     fontSize = 11.sp
                                 )

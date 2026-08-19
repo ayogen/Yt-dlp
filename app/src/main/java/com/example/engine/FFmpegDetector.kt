@@ -3,14 +3,23 @@ package com.example.engine
 import android.content.Context
 import java.io.File
 
+enum class FFmpegState(val displayName: String) {
+    AVAILABLE("FFmpeg Available"),
+    MISSING("FFmpeg Missing"),
+    INVALID_NOT_EXECUTABLE("FFmpeg Invalid/Not Executable")
+}
+
 data class FFmpegStatus(
-    val isAvailable: Boolean,
-    val ffmpegPath: String,
-    val ffprobePath: String,
-    val version: String,
+    val state: FFmpegState,
+    val binaryPath: String?,
+    val ffprobePath: String?,
+    val version: String?,
+    val isExecutable: Boolean,
     val capabilities: List<String>,
     val guidance: String
-)
+) {
+    val isAvailable: Boolean get() = state == FFmpegState.AVAILABLE
+}
 
 object FFmpegDetector {
     fun detect(context: Context): FFmpegStatus {
@@ -18,7 +27,6 @@ object FFmpegDetector {
         val localFfmpeg = File(appBinDir, "ffmpeg")
         val localFfprobe = File(appBinDir, "ffprobe")
 
-        // Check common system binary locations as well as app bin directory
         val possibleFfmpegPaths = listOf(
             localFfmpeg.absolutePath,
             "/system/bin/ffmpeg",
@@ -26,36 +34,91 @@ object FFmpegDetector {
             "/data/local/tmp/ffmpeg"
         )
 
-        var foundFfmpegPath: String? = null
+        var foundFile: File? = null
         for (path in possibleFfmpegPaths) {
             val f = File(path)
-            if (f.exists() && f.canExecute()) {
-                foundFfmpegPath = path
+            if (f.exists()) {
+                foundFile = f
                 break
             }
         }
 
-        val isFound = foundFfmpegPath != null
-        val version = if (isFound) "FFmpeg 6.1-native" else "Not Installed"
-        val capabilities = if (isFound) {
-            listOf("Stream Muxing (bestvideo+bestaudio)", "Audio Transcoding (MP3/FLAC/AAC)", "Subtitle Embedding", "Thumbnail Tagging")
-        } else {
-            listOf("Direct Stream Download Supported", "Internal Multiplexing Available")
+        if (foundFile == null) {
+            return FFmpegStatus(
+                state = FFmpegState.MISSING,
+                binaryPath = null,
+                ffprobePath = null,
+                version = null,
+                isExecutable = false,
+                capabilities = emptyList(),
+                guidance = "FFmpeg is not installed on this device. A real FFmpeg executable binary is required to merge video and audio streams (1080p, 1440p, 4K) and convert audio formats (MP3, M4A, FLAC, Opus). Please tap 'Install FFmpeg' below to download and configure it."
+            )
         }
 
-        val guidance = if (isFound) {
-            "FFmpeg is available and active for advanced muxing and audio post-processing."
-        } else {
-            "FFmpeg is optional. Direct stream downloading, container selection, and audio extraction function smoothly via native media processors. To enable external CLI muxing, place the ffmpeg binary in the app binary directory."
+        // If it is in the application's private files directory, ensure executable permissions
+        if (foundFile.parentFile?.absolutePath == appBinDir.absolutePath) {
+            try {
+                foundFile.setExecutable(true, false)
+                foundFile.setReadable(true, false)
+            } catch (e: Exception) {
+                AppLogger.w("FFmpegDetector", "Could not set executable permission: ${e.message}")
+            }
         }
 
-        return FFmpegStatus(
-            isAvailable = isFound,
-            ffmpegPath = foundFfmpegPath ?: localFfmpeg.absolutePath,
-            ffprobePath = if (localFfprobe.exists()) localFfprobe.absolutePath else "ffprobe",
-            version = version,
-            capabilities = capabilities,
-            guidance = guidance
-        )
+        // Test running ffmpeg -version
+        val versionInfo = testRunVersion(foundFile)
+        if (versionInfo != null) {
+            val ffprobeExecutablePath = if (localFfprobe.exists()) {
+                try { localFfprobe.setExecutable(true, false) } catch (e: Exception) {}
+                localFfprobe.absolutePath
+            } else null
+
+            return FFmpegStatus(
+                state = FFmpegState.AVAILABLE,
+                binaryPath = foundFile.absolutePath,
+                ffprobePath = ffprobeExecutablePath,
+                version = versionInfo,
+                isExecutable = true,
+                capabilities = listOf(
+                    "Video + Audio Muxing (1080p, 1440p, 4K, 8K)",
+                    "Audio Extraction & Transcoding (MP3, M4A, FLAC, Opus)",
+                    "MP4 / MKV / WebM Container Remuxing",
+                    "Subtitle & Metadata Embedding"
+                ),
+                guidance = "FFmpeg binary is active and verified operational at ${foundFile.absolutePath}."
+            )
+        } else {
+            return FFmpegStatus(
+                state = FFmpegState.INVALID_NOT_EXECUTABLE,
+                binaryPath = foundFile.absolutePath,
+                ffprobePath = null,
+                version = null,
+                isExecutable = false,
+                capabilities = emptyList(),
+                guidance = "FFmpeg binary exists at ${foundFile.absolutePath} but is invalid or not executable on this device architecture. Please tap 'Reinstall FFmpeg' to install a compatible binary."
+            )
+        }
+    }
+
+    private fun testRunVersion(binary: File): String? {
+        return try {
+            if (!binary.canExecute()) {
+                binary.setExecutable(true, false)
+            }
+            val process = ProcessBuilder(binary.absolutePath, "-version")
+                .redirectErrorStream(true)
+                .start()
+            val reader = process.inputStream.bufferedReader()
+            val firstLine = reader.readLine()
+            val exitCode = process.waitFor()
+            if (exitCode == 0 && !firstLine.isNullOrBlank() && firstLine.contains("ffmpeg", ignoreCase = true)) {
+                firstLine.trim()
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            AppLogger.w("FFmpegDetector", "FFmpeg execution test failed: ${e.message}")
+            null
+        }
     }
 }

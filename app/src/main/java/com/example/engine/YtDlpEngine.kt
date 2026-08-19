@@ -2,7 +2,6 @@ package com.example.engine
 
 import android.content.Context
 import com.example.data.model.AppSettings
-import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
@@ -36,13 +35,12 @@ class YtDlpEngine(private val context: Context) {
                 AppLogger.i("YtDlpEngine", "Metadata extracted via CLI runner")
                 return@withContext cliResult
             } else {
-                AppLogger.w("YtDlpEngine", "CLI extraction failed, falling back to embedded extractor: ${cliResult.exceptionOrNull()?.message}")
+                AppLogger.w("YtDlpEngine", "CLI extraction error, falling back: ${cliResult.exceptionOrNull()?.message}")
             }
         }
 
-        // Use embedded high-speed extractor
-        val result = EmbeddedExtractorEngine.analyzeUrl(url)
-        result
+        // Use direct/webpage extractor
+        EmbeddedExtractorEngine.analyzeUrl(url)
     }
 
     suspend fun executeDownload(
@@ -58,11 +56,27 @@ class YtDlpEngine(private val context: Context) {
         val binaryFile = YtDlpBinaryManager.getBinaryFile(context)
         val ffmpegStatus = FFmpegDetector.detect(context)
 
-        // Determine staging file location
+        // Determine target file extension
         val resolvedExt = if (task.mediaType == MediaType.AUDIO) {
             task.targetContainer.ifBlank { "mp3" }
         } else {
             task.targetContainer.ifBlank { "mp4" }
+        }
+
+        // Format specification
+        val formatArg = buildFormatArgument(task)
+
+        // Check if FFmpeg is strictly required
+        val requiresFFmpeg = task.mediaType == MediaType.AUDIO ||
+                formatArg.contains("+") ||
+                task.formatId in listOf("1080p", "1440p", "2160p", "720p", "480p", "360p", "best") ||
+                task.embedSubs ||
+                task.embedThumbnail
+
+        if (requiresFFmpeg && !ffmpegStatus.isAvailable) {
+            val msg = "FFmpeg is required for ${task.formatDescription} to merge streams or convert audio, but is not available on this device. Please install FFmpeg from Settings."
+            AppLogger.e("YtDlpEngine", msg, taskId)
+            return@withContext Result.failure(IllegalStateException(msg))
         }
 
         val filename = FilenameFormatter.format(
@@ -84,8 +98,16 @@ class YtDlpEngine(private val context: Context) {
 
         val stagingFile = File(stagingDir, filename)
 
-        // Helper to finalize downloaded file
+        // Helper to validate and finalize downloaded file
         fun finalizeDownload(completedFile: File): Result<String> {
+            val validation = StorageUtils.validateMediaFile(completedFile, task.mediaType, resolvedExt)
+            if (validation.isFailure) {
+                val err = validation.exceptionOrNull() ?: Exception("Media validation failed")
+                AppLogger.e("YtDlpEngine", "Downloaded file validation failed: ${err.message}", taskId)
+                try { completedFile.delete() } catch (e: Exception) {}
+                return Result.failure(err)
+            }
+
             return if (isSafConfigured) {
                 StorageUtils.exportFileToSaf(
                     context = context,
@@ -102,16 +124,20 @@ class YtDlpEngine(private val context: Context) {
 
         // If CLI binary is available and executable, run CLI
         if (binaryFile.exists() && binaryFile.canExecute()) {
-            val formatArg = buildFormatArgument(task, settings)
             val outputTemplate = stagingFile.absolutePath
 
             val cliResult = YtDlpProcessRunner.runDownloadCli(
                 taskId = taskId,
                 binaryPath = binaryFile.absolutePath,
                 url = task.url,
+                mediaType = task.mediaType,
                 formatSpec = formatArg,
+                targetContainer = resolvedExt,
+                audioBitrate = task.audioBitrate,
+                embedSubs = task.embedSubs,
+                embedThumbnail = task.embedThumbnail,
                 outputTemplate = outputTemplate,
-                ffmpegPath = if (ffmpegStatus.isAvailable) ffmpegStatus.ffmpegPath else null,
+                ffmpegPath = if (ffmpegStatus.isAvailable) ffmpegStatus.binaryPath else null,
                 cookiesPath = settings.cookiesFilePath.ifBlank { null },
                 customArgs = settings.customYtDlpArgs,
                 onProgress = onProgress,
@@ -123,29 +149,36 @@ class YtDlpEngine(private val context: Context) {
                 val producedFile = File(producedPath)
                 return@withContext finalizeDownload(producedFile)
             } else {
-                AppLogger.w("YtDlpEngine", "CLI download failed, falling back to embedded streaming downloader: ${cliResult.exceptionOrNull()?.message}", taskId)
+                val cliError = cliResult.exceptionOrNull() ?: Exception("CLI execution failed")
+                AppLogger.e("YtDlpEngine", "CLI download failed: ${cliError.message}", taskId)
+                return@withContext Result.failure(cliError)
             }
         }
 
-        // Use embedded streaming downloader
-        val estimatedSize = if (task.totalBytes > 0) task.totalBytes else 75_000_000L
-        val streamResult = EmbeddedExtractorEngine.downloadDirectStream(
-            taskId = taskId,
-            url = task.url,
-            destinationFile = stagingFile,
-            targetTotalBytes = estimatedSize,
-            onProgress = onProgress,
-            isCancelled = isCancelled,
-            isPaused = isPaused
-        )
+        // If CLI is not present, only direct HTTP media stream URLs are allowed
+        if (EmbeddedExtractorEngine.isDirectMediaUrl(task.url)) {
+            val streamResult = EmbeddedExtractorEngine.downloadDirectStream(
+                taskId = taskId,
+                url = task.url,
+                destinationFile = stagingFile,
+                targetTotalBytes = task.totalBytes,
+                onProgress = onProgress,
+                isCancelled = isCancelled,
+                isPaused = isPaused
+            )
 
-        if (streamResult.isSuccess) {
-            val producedPath = streamResult.getOrNull() ?: stagingFile.absolutePath
-            val producedFile = File(producedPath)
-            return@withContext finalizeDownload(producedFile)
-        } else {
-            return@withContext streamResult
+            if (streamResult.isSuccess) {
+                val producedPath = streamResult.getOrNull() ?: stagingFile.absolutePath
+                val producedFile = File(producedPath)
+                return@withContext finalizeDownload(producedFile)
+            } else {
+                return@withContext streamResult
+            }
         }
+
+        return@withContext Result.failure(
+            IllegalStateException("yt-dlp binary is not installed or executable. Please install or update yt-dlp in Settings.")
+        )
     }
 
     fun classifyError(e: Throwable): EngineDiagnosticError {
@@ -178,8 +211,8 @@ class YtDlpEngine(private val context: Context) {
             msg.contains("ffmpeg", ignoreCase = true) -> {
                 EngineDiagnosticError(
                     title = "FFmpeg Post-Processing Required",
-                    reason = "FFmpeg is required to merge separate video and audio streams.",
-                    suggestedAction = "Check Settings > FFmpeg to verify availability, or select a pre-muxed container format.",
+                    reason = "A real FFmpeg binary is required to merge video and audio streams or convert audio formats.",
+                    suggestedAction = "Go to Settings > FFmpeg Status and tap 'Install FFmpeg' to set up the executable binary.",
                     technicalDetails = msg
                 )
             }
@@ -202,7 +235,7 @@ class YtDlpEngine(private val context: Context) {
         }
     }
 
-    private fun buildFormatArgument(task: DownloadTaskEntity, settings: AppSettings): String {
+    private fun buildFormatArgument(task: DownloadTaskEntity): String {
         return if (task.mediaType == MediaType.AUDIO) {
             "bestaudio/best"
         } else {
@@ -213,7 +246,16 @@ class YtDlpEngine(private val context: Context) {
                 "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]"
                 "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]"
                 "360p" -> "bestvideo[height<=360]+bestaudio/best[height<=360]"
-                else -> "bestvideo*+bestaudio/best"
+                "best" -> "bestvideo+bestaudio/best"
+                else -> {
+                    if (task.formatId.isNotBlank() && task.formatId.all { it.isDigit() }) {
+                        "${task.formatId}+bestaudio/best"
+                    } else if (task.formatId.isNotBlank()) {
+                        task.formatId
+                    } else {
+                        "bestvideo+bestaudio/best"
+                    }
+                }
             }
         }
     }

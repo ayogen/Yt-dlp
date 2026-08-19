@@ -69,7 +69,7 @@ data class FormatInfo(
             return if (bytes != null && bytes > 0) {
                 formatBytes(bytes)
             } else {
-                "Size dynamic"
+                "Unknown size"
             }
         }
 

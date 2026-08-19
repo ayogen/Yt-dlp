@@ -8,9 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
 import java.io.File
-import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -26,23 +24,23 @@ object EmbeddedExtractorEngine {
 
     suspend fun analyzeUrl(url: String): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         try {
-            AppLogger.i("EmbeddedExtractor", "Analyzing URL: $url")
+            AppLogger.i("EmbeddedExtractor", "Analyzing direct URL: $url")
             val validatedUrl = validateAndNormalizeUrl(url)
-                ?: return@withContext Result.failure(IllegalArgumentException("Invalid URL format. Please provide a valid HTTP/HTTPS web address."))
+                ?: return@withContext Result.failure(IllegalArgumentException("Invalid URL format. Please provide a valid HTTP/HTTPS address."))
 
             val uri = URL(validatedUrl)
             val host = uri.host.lowercase()
 
-            // Check if URL is a direct media file (e.g., .mp4, .mkv, .mp3, .m4a, .webm)
+            // Check if URL is a direct media stream
             val isDirectMedia = isDirectMediaUrl(validatedUrl)
             if (isDirectMedia) {
                 return@withContext extractDirectMediaMetadata(validatedUrl)
             }
 
-            // Extract webpage HTML to obtain OpenGraph, meta tags, and structured formats
+            // Extract webpage HTML to obtain OpenGraph and meta tags without fake numbers
             val htmlContent = fetchWebpage(validatedUrl)
             val metadata = parseWebpageMetadata(validatedUrl, host, htmlContent)
-            AppLogger.i("EmbeddedExtractor", "Successfully extracted metadata for: ${metadata.title} (${metadata.formats.size} formats)")
+            AppLogger.i("EmbeddedExtractor", "Extracted web page metadata for: ${metadata.title}")
             Result.success(metadata)
         } catch (e: Exception) {
             AppLogger.e("EmbeddedExtractor", "Extraction failed: ${e.message}")
@@ -69,7 +67,7 @@ object EmbeddedExtractorEngine {
         }
     }
 
-    private fun isDirectMediaUrl(url: String): Boolean {
+    fun isDirectMediaUrl(url: String): Boolean {
         val clean = url.substringBefore("?").lowercase()
         return clean.endsWith(".mp4") || clean.endsWith(".mkv") || clean.endsWith(".webm") ||
                 clean.endsWith(".mp3") || clean.endsWith(".m4a") || clean.endsWith(".opus") ||
@@ -91,7 +89,7 @@ object EmbeddedExtractorEngine {
                 }
             }
         } catch (e: Exception) {
-            // Fallback
+            AppLogger.w("EmbeddedExtractor", "Could not fetch Content-Length: ${e.message}")
         }
 
         val formats = if (isAudio) {
@@ -100,7 +98,7 @@ object EmbeddedExtractorEngine {
                     formatId = "audio-direct",
                     ext = ext,
                     acodec = ext,
-                    abr = 320.0,
+                    abr = null,
                     filesize = contentLength,
                     formatNote = "Direct Audio Stream",
                     url = url
@@ -111,23 +109,11 @@ object EmbeddedExtractorEngine {
                 FormatInfo(
                     formatId = "best",
                     ext = ext,
-                    resolution = "1080p",
-                    height = 1080,
+                    resolution = "Direct Stream",
                     vcodec = "h264",
                     acodec = "aac",
                     filesize = contentLength,
                     formatNote = "Original Direct Stream",
-                    url = url
-                ),
-                FormatInfo(
-                    formatId = "720p",
-                    ext = ext,
-                    resolution = "720p",
-                    height = 720,
-                    vcodec = "h264",
-                    acodec = "aac",
-                    filesize = contentLength?.let { (it * 0.6).toLong() },
-                    formatNote = "Direct Stream (720p)",
                     url = url
                 )
             )
@@ -139,7 +125,12 @@ object EmbeddedExtractorEngine {
                 title = fileName.substringBeforeLast("."),
                 webpageUrl = url,
                 uploader = "Direct Web Source",
-                durationSeconds = 0,
+                durationSeconds = 0L,
+                viewCount = null,
+                likeCount = null,
+                uploadDate = "",
+                description = "Direct media stream from $url",
+                thumbnail = "",
                 formats = formats,
                 extractorName = "DirectStreamExtractor",
                 directDownloadUrl = url
@@ -165,7 +156,7 @@ object EmbeddedExtractorEngine {
     private fun parseWebpageMetadata(url: String, host: String, html: String): MediaMetadata {
         val ogTitle = extractTag(html, "property=\"og:title\" content=\"([^\"]+)\"")
             ?: extractTag(html, "<title>([^<]+)</title>")
-            ?: "Media Stream (${host})"
+            ?: "Media ($host)"
 
         val ogImage = extractTag(html, "property=\"og:image\" content=\"([^\"]+)\"")
             ?: extractTag(html, "name=\"twitter:image\" content=\"([^\"]+)\"")
@@ -179,22 +170,46 @@ object EmbeddedExtractorEngine {
             ?: host.removePrefix("www.").substringBefore(".")
 
         val isPlaylist = url.contains("list=", ignoreCase = true) || url.contains("/playlist", ignoreCase = true)
-        val playlistEntries = if (isPlaylist) {
-            generatePlaylistEntries(url, ogTitle)
-        } else {
-            emptyList()
-        }
 
-        // Generate comprehensive format matrix based on yt-dlp standard output profiles
-        val formats = generateStandardFormatList(url, isPlaylist)
-
-        val subtitles = listOf(
-            SubtitleTrack("en", "English", isAutoGenerated = false),
-            SubtitleTrack("es", "Spanish", isAutoGenerated = false),
-            SubtitleTrack("fr", "French", isAutoGenerated = false),
-            SubtitleTrack("de", "German", isAutoGenerated = false),
-            SubtitleTrack("ar", "Arabic", isAutoGenerated = false),
-            SubtitleTrack("auto-en", "English (Auto-generated)", isAutoGenerated = true)
+        val formats = listOf(
+            FormatInfo(
+                formatId = "bestvideo+bestaudio/best",
+                ext = "mp4",
+                resolution = "Best Available",
+                formatNote = "Best Video + Audio (FFmpeg Merged)",
+                filesize = null,
+                filesizeApprox = null,
+                url = url
+            ),
+            FormatInfo(
+                formatId = "1080p",
+                ext = "mp4",
+                resolution = "1080p",
+                height = 1080,
+                formatNote = "1080p Full HD",
+                filesize = null,
+                filesizeApprox = null,
+                url = url
+            ),
+            FormatInfo(
+                formatId = "720p",
+                ext = "mp4",
+                resolution = "720p",
+                height = 720,
+                formatNote = "720p HD",
+                filesize = null,
+                filesizeApprox = null,
+                url = url
+            ),
+            FormatInfo(
+                formatId = "bestaudio",
+                ext = "m4a",
+                resolution = "audio only",
+                formatNote = "Best Audio Stream",
+                filesize = null,
+                filesizeApprox = null,
+                url = url
+            )
         )
 
         return MediaMetadata(
@@ -203,134 +218,18 @@ object EmbeddedExtractorEngine {
             webpageUrl = url,
             uploader = ogSiteName.capitalizeFirstLetter(),
             channel = ogSiteName,
-            durationSeconds = 345, // default duration if not parsed
-            viewCount = 124500L,
-            likeCount = 8900L,
-            uploadDate = "2026-01-15",
+            durationSeconds = 0L,
+            viewCount = null,
+            likeCount = null,
+            uploadDate = "",
             description = cleanHtmlEntities(ogDesc),
             thumbnail = ogImage,
             isPlaylist = isPlaylist,
-            playlistCount = if (isPlaylist) 8 else 0,
-            playlistEntries = playlistEntries,
+            playlistCount = 0,
+            playlistEntries = emptyList(),
             formats = formats,
-            subtitles = subtitles,
+            subtitles = emptyList(),
             extractorName = host
-        )
-    }
-
-    private fun generatePlaylistEntries(url: String, playlistTitle: String): List<PlaylistEntry> {
-        return (1..8).map { index ->
-            PlaylistEntry(
-                id = "entry_$index",
-                title = "$playlistTitle - Part $index",
-                url = "$url#item=$index",
-                durationSeconds = (180 + index * 45).toLong(),
-                uploader = "Playlist Creator",
-                isSelected = true
-            )
-        }
-    }
-
-    private fun generateStandardFormatList(url: String, isPlaylist: Boolean): List<FormatInfo> {
-        return listOf(
-            FormatInfo(
-                formatId = "bestvideo+bestaudio/best",
-                ext = "mp4",
-                resolution = "1080p",
-                height = 1080,
-                fps = 60.0,
-                vcodec = "avc1.64002a",
-                acodec = "mp4a.40.2",
-                tbr = 4500.0,
-                filesize = 188_000_000L,
-                formatNote = "Best (1080p60 Full HD + Audio)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "2160p",
-                ext = "mp4",
-                resolution = "2160p",
-                height = 2160,
-                fps = 60.0,
-                vcodec = "vp09.00.51",
-                acodec = "mp4a.40.2",
-                tbr = 18000.0,
-                filesize = 750_000_000L,
-                formatNote = "4K Ultra HD (60 FPS)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "1440p",
-                ext = "mp4",
-                resolution = "1440p",
-                height = 1440,
-                fps = 60.0,
-                vcodec = "vp09.00.41",
-                acodec = "mp4a.40.2",
-                tbr = 9500.0,
-                filesize = 390_000_000L,
-                formatNote = "2K Quad HD (60 FPS)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "720p",
-                ext = "mp4",
-                resolution = "720p",
-                height = 720,
-                fps = 30.0,
-                vcodec = "avc1.4d401f",
-                acodec = "mp4a.40.2",
-                tbr = 2200.0,
-                filesize = 95_000_000L,
-                formatNote = "HD 720p (30 FPS)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "480p",
-                ext = "mp4",
-                resolution = "480p",
-                height = 480,
-                fps = 30.0,
-                vcodec = "avc1.4d401e",
-                acodec = "mp4a.40.2",
-                tbr = 1100.0,
-                filesize = 48_000_000L,
-                formatNote = "SD 480p",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "360p",
-                ext = "mp4",
-                resolution = "360p",
-                height = 360,
-                fps = 30.0,
-                vcodec = "avc1.42c01e",
-                acodec = "mp4a.40.2",
-                tbr = 650.0,
-                filesize = 28_000_000L,
-                formatNote = "Low 360p (Data Saver)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "bestaudio",
-                ext = "m4a",
-                resolution = "audio only",
-                acodec = "mp4a.40.2",
-                abr = 320.0,
-                filesize = 14_500_000L,
-                formatNote = "Original Audio Stream (320 kbps)",
-                url = url
-            ),
-            FormatInfo(
-                formatId = "audio-mp3-192",
-                ext = "mp3",
-                resolution = "audio only",
-                acodec = "mp3",
-                abr = 192.0,
-                filesize = 8_900_000L,
-                formatNote = "MP3 Audio (192 kbps)",
-                url = url
-            )
         )
     }
 
@@ -343,19 +242,32 @@ object EmbeddedExtractorEngine {
         isCancelled: () -> Boolean,
         isPaused: () -> Boolean
     ): Result<String> = withContext(Dispatchers.IO) {
+        if (!isDirectMediaUrl(url)) {
+            return@withContext Result.failure(
+                IllegalStateException("Direct stream download only supports direct media URLs (e.g. .mp4, .mp3, .m4a). For video platforms, yt-dlp and FFmpeg are required.")
+            )
+        }
+
         try {
             destinationFile.parentFile?.mkdirs()
             val existingLength = if (destinationFile.exists()) destinationFile.length() else 0L
 
-            AppLogger.i("EmbeddedExtractor", "Starting download for task $taskId. Existing bytes: $existingLength", taskId)
+            AppLogger.i("EmbeddedExtractor", "Starting direct media stream download for task $taskId. Existing bytes: $existingLength", taskId)
 
-            // Setup range request for resumable downloading
             val requestBuilder = Request.Builder().url(url)
             if (existingLength > 0) {
                 requestBuilder.header("Range", "bytes=$existingLength-")
             }
 
-            var simulatedTotal = if (targetTotalBytes > 0) targetTotalBytes else 45_000_000L
+            val response = client.newCall(requestBuilder.build()).execute()
+            if (!response.isSuccessful && response.code != 206) {
+                return@withContext Result.failure(Exception("HTTP error ${response.code}: ${response.message}"))
+            }
+
+            val body = response.body ?: return@withContext Result.failure(Exception("Empty response body from media server"))
+            val contentLength = body.contentLength()
+            val totalBytes = if (contentLength > 0) existingLength + contentLength else targetTotalBytes
+
             var currentDownloaded = existingLength
             var lastUpdateTime = System.currentTimeMillis()
             var bytesSinceLastUpdate = 0L
@@ -364,103 +276,54 @@ object EmbeddedExtractorEngine {
             randomAccess.seek(existingLength)
 
             try {
-                // If url is direct HTTP/HTTPS stream, execute real network pipe
-                if (isDirectMediaUrl(url)) {
-                    val response = client.newCall(requestBuilder.build()).execute()
-                    if (!response.isSuccessful && response.code != 206) {
-                        return@withContext Result.failure(Exception("HTTP error ${response.code}: ${response.message}"))
+                val stream = body.byteStream()
+                val buffer = ByteArray(32768)
+                var bytesRead: Int
+
+                while (stream.read(buffer).also { bytesRead = it } != -1) {
+                    if (isCancelled()) {
+                        randomAccess.close()
+                        return@withContext Result.failure(Exception("Download cancelled by user"))
                     }
 
-                    val body = response.body ?: return@withContext Result.failure(Exception("Empty body response"))
-                    val contentLength = body.contentLength()
-                    if (contentLength > 0) {
-                        simulatedTotal = existingLength + contentLength
-                    }
-
-                    val stream = body.byteStream()
-                    val buffer = ByteArray(32768)
-                    var bytesRead: Int
-
-                    while (stream.read(buffer).also { bytesRead = it } != -1) {
+                    while (isPaused()) {
                         if (isCancelled()) {
                             randomAccess.close()
-                            return@withContext Result.failure(Exception("Cancelled by user"))
+                            return@withContext Result.failure(Exception("Download cancelled by user"))
                         }
-
-                        while (isPaused()) {
-                            if (isCancelled()) {
-                                randomAccess.close()
-                                return@withContext Result.failure(Exception("Cancelled by user"))
-                            }
-                            kotlinx.coroutines.delay(250)
-                        }
-
-                        randomAccess.write(buffer, 0, bytesRead)
-                        currentDownloaded += bytesRead
-                        bytesSinceLastUpdate += bytesRead
-
-                        val now = System.currentTimeMillis()
-                        val elapsed = (now - lastUpdateTime) / 1000.0
-                        if (elapsed >= 0.25) {
-                            val speed = bytesSinceLastUpdate / elapsed
-                            val remainingBytes = (simulatedTotal - currentDownloaded).coerceAtLeast(0L)
-                            val eta = if (speed > 0) (remainingBytes / speed).toLong() else 0L
-                            val progress = ((currentDownloaded.toDouble() / simulatedTotal.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
-
-                            onProgress(progress, currentDownloaded, simulatedTotal, speed, eta)
-                            lastUpdateTime = now
-                            bytesSinceLastUpdate = 0L
-                        }
+                        kotlinx.coroutines.delay(250)
                     }
-                } else {
-                    // Perform high-throughput resilient chunked byte generation for web extractors
-                    val chunkSize = 65536
-                    val dummyBuffer = ByteArray(chunkSize) { (it % 256).toByte() }
 
-                    while (currentDownloaded < simulatedTotal) {
-                        if (isCancelled()) {
-                            randomAccess.close()
-                            return@withContext Result.failure(Exception("Cancelled by user"))
+                    randomAccess.write(buffer, 0, bytesRead)
+                    currentDownloaded += bytesRead
+                    bytesSinceLastUpdate += bytesRead
+
+                    val now = System.currentTimeMillis()
+                    val elapsed = (now - lastUpdateTime) / 1000.0
+                    if (elapsed >= 0.25) {
+                        val speed = bytesSinceLastUpdate / elapsed
+                        val remainingBytes = if (totalBytes > 0) (totalBytes - currentDownloaded).coerceAtLeast(0L) else 0L
+                        val eta = if (speed > 0) (remainingBytes / speed).toLong() else 0L
+                        val progress = if (totalBytes > 0) {
+                            ((currentDownloaded.toDouble() / totalBytes.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
+                        } else {
+                            0f
                         }
 
-                        while (isPaused()) {
-                            if (isCancelled()) {
-                                randomAccess.close()
-                                return@withContext Result.failure(Exception("Cancelled by user"))
-                            }
-                            kotlinx.coroutines.delay(250)
-                        }
-
-                        val bytesToWrite = Math.min(chunkSize.toLong(), simulatedTotal - currentDownloaded).toInt()
-                        randomAccess.write(dummyBuffer, 0, bytesToWrite)
-                        currentDownloaded += bytesToWrite
-                        bytesSinceLastUpdate += bytesToWrite
-
-                        kotlinx.coroutines.delay(12) // simulates ~5.4 MB/s real broadband rate
-
-                        val now = System.currentTimeMillis()
-                        val elapsed = (now - lastUpdateTime) / 1000.0
-                        if (elapsed >= 0.2) {
-                            val speed = bytesSinceLastUpdate / elapsed
-                            val remainingBytes = (simulatedTotal - currentDownloaded).coerceAtLeast(0L)
-                            val eta = if (speed > 0) (remainingBytes / speed).toLong() else 0L
-                            val progress = ((currentDownloaded.toDouble() / simulatedTotal.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
-
-                            onProgress(progress, currentDownloaded, simulatedTotal, speed, eta)
-                            lastUpdateTime = now
-                            bytesSinceLastUpdate = 0L
-                        }
+                        onProgress(progress, currentDownloaded, totalBytes, speed, eta)
+                        lastUpdateTime = now
+                        bytesSinceLastUpdate = 0L
                     }
                 }
             } finally {
                 try { randomAccess.close() } catch (e: Exception) {}
             }
 
-            onProgress(100f, simulatedTotal, simulatedTotal, 0.0, 0L)
-            AppLogger.i("EmbeddedExtractor", "Download completed successfully for task $taskId -> ${destinationFile.absolutePath}", taskId)
+            onProgress(100f, currentDownloaded, currentDownloaded, 0.0, 0L)
+            AppLogger.i("EmbeddedExtractor", "Direct stream completed for task $taskId -> ${destinationFile.absolutePath}", taskId)
             Result.success(destinationFile.absolutePath)
         } catch (e: Exception) {
-            AppLogger.e("EmbeddedExtractor", "Download failed for task $taskId: ${e.message}", taskId)
+            AppLogger.e("EmbeddedExtractor", "Direct stream download failed for task $taskId: ${e.message}", taskId)
             Result.failure(e)
         }
     }

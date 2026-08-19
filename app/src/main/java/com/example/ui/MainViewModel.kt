@@ -20,6 +20,7 @@ import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
 import com.example.engine.AppLogger
 import com.example.engine.EngineDiagnosticError
+import com.example.engine.FFmpegBinaryManager
 import com.example.engine.FFmpegDetector
 import com.example.engine.FFmpegStatus
 import com.example.engine.YtDlpBinaryManager
@@ -69,6 +70,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _ffmpegStatus = MutableStateFlow<FFmpegStatus?>(null)
     val ffmpegStatus: StateFlow<FFmpegStatus?> = _ffmpegStatus.asStateFlow()
+
+    private val _isUpdatingFFmpeg = MutableStateFlow(false)
+    val isUpdatingFFmpeg: StateFlow<Boolean> = _isUpdatingFFmpeg.asStateFlow()
+
+    private val _ffmpegUpdateProgress = MutableStateFlow(0f)
+    val ffmpegUpdateProgress: StateFlow<Float> = _ffmpegUpdateProgress.asStateFlow()
 
     private val _versionInfo = MutableStateFlow<YtDlpVersionInfo?>(null)
     val versionInfo: StateFlow<YtDlpVersionInfo?> = _versionInfo.asStateFlow()
@@ -304,6 +311,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 refreshDiagnostics()
             } else {
                 _toastMessage.value = "Update failed: ${result.exceptionOrNull()?.message}"
+            }
+        }
+    }
+
+    fun installOrUpdateFFmpeg() {
+        viewModelScope.launch {
+            _isUpdatingFFmpeg.value = true
+            _ffmpegUpdateProgress.value = 0f
+            val result = FFmpegBinaryManager.installOrUpdateFFmpeg(getApplication()) { prog ->
+                _ffmpegUpdateProgress.value = prog
+            }
+            _isUpdatingFFmpeg.value = false
+            if (result.isSuccess) {
+                val status = result.getOrNull()
+                _ffmpegStatus.value = status
+                _toastMessage.value = "FFmpeg installed successfully: ${status?.version ?: "Ready"}"
+                refreshDiagnostics()
+            } else {
+                _toastMessage.value = "FFmpeg installation failed: ${result.exceptionOrNull()?.message}"
+                refreshDiagnostics()
             }
         }
     }

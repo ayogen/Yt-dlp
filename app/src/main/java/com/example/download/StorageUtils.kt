@@ -375,4 +375,80 @@ object StorageUtils {
             else -> if (mediaType == MediaType.AUDIO) "audio/*" else "video/*"
         }
     }
+
+    /**
+     * Validates that a downloaded media file on disk is real, non-empty, and possesses valid container headers.
+     */
+    fun validateMediaFile(file: File, mediaType: MediaType, expectedExt: String): Result<Unit> {
+        if (!file.exists() || !file.isFile) {
+            return Result.failure(IllegalStateException("Target media file does not exist on disk."))
+        }
+        val size = file.length()
+        if (size <= 128) {
+            return Result.failure(IllegalStateException("Downloaded file is empty or corrupted ($size bytes)."))
+        }
+
+        return try {
+            val headerBytes = ByteArray(64)
+            val bytesRead = file.inputStream().use { it.read(headerBytes) }
+            if (bytesRead < 4) {
+                return Result.failure(IllegalStateException("Media file header is truncated."))
+            }
+
+            val headerStr = String(headerBytes, 0, bytesRead, Charsets.US_ASCII)
+            val lowerHeader = headerStr.lowercase()
+
+            // Reject if HTML page was downloaded instead of media
+            if (lowerHeader.contains("<!doctype html") || lowerHeader.contains("<html") || lowerHeader.contains("<head")) {
+                return Result.failure(IllegalStateException("Target server returned an HTML error webpage instead of media stream."))
+            }
+
+            val cleanExt = expectedExt.lowercase().removePrefix(".")
+            when (cleanExt) {
+                "mp4", "m4a" -> {
+                    // MP4 / M4A files contain 'ftyp' in the first 32 bytes
+                    if (!headerStr.contains("ftyp") && !headerStr.contains("moov") && !headerStr.contains("mdat")) {
+                        AppLogger.w("StorageUtils", "MP4 container validation warning: 'ftyp' box not found in initial 64 bytes.")
+                    }
+                }
+                "mkv", "webm" -> {
+                    // EBML Header: 0x1A 0x45 0xDF 0xA3
+                    val isEbml = headerBytes[0] == 0x1A.toByte() &&
+                            headerBytes[1] == 0x45.toByte() &&
+                            headerBytes[2] == 0xDF.toByte() &&
+                            headerBytes[3] == 0xA3.toByte()
+                    if (!isEbml) {
+                        AppLogger.w("StorageUtils", "Matroska/WebM EBML magic header not matched.")
+                    }
+                }
+                "mp3" -> {
+                    val isId3 = headerStr.startsWith("ID3")
+                    val isSync = (headerBytes[0].toInt() and 0xFF) == 0xFF && ((headerBytes[1].toInt() and 0xE0) == 0xE0)
+                    if (!isId3 && !isSync) {
+                        AppLogger.w("StorageUtils", "MP3 ID3 tag or frame sync word not found in header.")
+                    }
+                }
+                "flac" -> {
+                    if (!headerStr.startsWith("fLaC")) {
+                        return Result.failure(IllegalStateException("Invalid FLAC stream: missing 'fLaC' marker."))
+                    }
+                }
+                "opus", "ogg" -> {
+                    if (!headerStr.startsWith("OggS")) {
+                        return Result.failure(IllegalStateException("Invalid Ogg/Opus stream: missing 'OggS' marker."))
+                    }
+                }
+                "wav" -> {
+                    if (!headerStr.startsWith("RIFF")) {
+                        return Result.failure(IllegalStateException("Invalid WAV file: missing 'RIFF' header."))
+                    }
+                }
+            }
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLogger.e("StorageUtils", "Media file validation error: ${e.message}")
+            Result.failure(e)
+        }
+    }
 }
