@@ -3,6 +3,7 @@ package com.example.ui.settings
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -29,8 +31,10 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ListAlt
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.SettingsSuggest
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -71,6 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AudioFormat
+import com.example.data.model.EngineState
 import com.example.data.model.OutputContainer
 import com.example.download.StorageUtils
 import com.example.engine.FFmpegState
@@ -93,12 +98,15 @@ import com.example.ui.theme.ElegantTextTertiary
 fun SettingsScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
+    val ytdlpStatus by viewModel.ytdlpStatus.collectAsState()
     val versionInfo by viewModel.versionInfo.collectAsState()
     val ffmpegStatus by viewModel.ffmpegStatus.collectAsState()
-    val isUpdating by viewModel.isUpdatingYtDlp.collectAsState()
+    val isUpdatingYtDlp by viewModel.isUpdatingYtDlp.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
     val isUpdatingFFmpeg by viewModel.isUpdatingFFmpeg.collectAsState()
     val ffmpegUpdateProgress by viewModel.ffmpegUpdateProgress.collectAsState()
+    val isCheckingUpdates by viewModel.isCheckingUpdates.collectAsState()
+    val updateCheckMessage by viewModel.updateCheckMessage.collectAsState()
     val logs by viewModel.logs.collectAsState()
 
     var showLogsDialog by remember { mutableStateOf(false) }
@@ -123,40 +131,46 @@ fun SettingsScreen(viewModel: MainViewModel) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        // Section 1: yt-dlp Core Engine & Binary Management
-        SettingsSectionHeader(icon = Icons.Default.SystemUpdate, title = "yt-dlp Core Engine")
+        // Section 1: Media Engines
+        SettingsSectionHeader(icon = Icons.Default.SettingsSuggest, title = "Media Engines")
         Spacer(modifier = Modifier.height(8.dp))
 
         Card(
             colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
             shape = RoundedCornerShape(16.dp),
             border = CardDefaults.outlinedCardBorder().copy(brush = Brush.verticalGradient(listOf(ElegantDarkBorder, Color.Transparent))),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().testTag("media_engines_card")
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+                // Header & Unified Update Check Button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Installed yt-dlp",
+                            text = "Engine Runtime Status",
                             fontWeight = FontWeight.Bold,
                             color = ElegantTextPrimary,
                             fontSize = 14.sp
                         )
-                        Text(
-                            text = "Version: ${versionInfo?.currentVersion ?: "Ready (Built-in)"}",
-                            color = ElegantLavenderPrimary,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Memory, contentDescription = null, tint = ElegantLavenderPrimary, modifier = Modifier.size(12.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "ABI: ${viewModel.deviceAbi}",
+                                color = ElegantLavenderPrimary,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
 
                     Button(
-                        onClick = { viewModel.updateYtDlpBinary() },
-                        enabled = !isUpdating,
+                        onClick = { viewModel.checkForEngineUpdates() },
+                        enabled = !isCheckingUpdates && !isUpdatingYtDlp && !isUpdatingFFmpeg,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ElegantLavenderPrimary,
                             contentColor = ElegantLavenderOnPrimary,
@@ -164,48 +178,59 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             disabledContentColor = ElegantTextTertiary
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.testTag("update_ytdlp_button")
+                        modifier = Modifier.testTag("check_engine_updates_button")
                     ) {
-                        if (isUpdating) {
+                        if (isCheckingUpdates) {
                             CircularProgressIndicator(
                                 color = ElegantLavenderOnPrimary,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Updating...", fontSize = 12.sp)
+                            Text("Checking...", fontSize = 12.sp)
                         } else {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Update Engine", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Check for Updates", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
 
-                if (isUpdating) {
+                // Update result message banner if present
+                if (updateCheckMessage != null) {
                     Spacer(modifier = Modifier.height(10.dp))
-                    LinearProgressIndicator(
-                        progress = { updateProgress },
-                        color = ElegantLavenderPrimary,
-                        trackColor = ElegantDarkSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                    )
+                    Surface(
+                        color = if (updateCheckMessage?.startsWith("✓") == true) ElegantGreen.copy(alpha = 0.15f) else ElegantAmber.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = updateCheckMessage ?: "",
+                            color = if (updateCheckMessage?.startsWith("✓") == true) ElegantGreen else ElegantAmber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 Divider(color = ElegantDarkBorder)
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // FFmpeg Integration Status
-                val currentStatus = ffmpegStatus
-                val ffmpegState = currentStatus?.state ?: FFmpegState.MISSING
-                val ffmpegColor = when (ffmpegState) {
-                    FFmpegState.AVAILABLE -> ElegantGreen
-                    FFmpegState.MISSING -> ElegantAmber
-                    FFmpegState.INVALID_NOT_EXECUTABLE -> ElegantRed
+                // Engine 1: yt-dlp Core Extractor
+                val isYtDlpReady = ytdlpStatus?.isReady == true
+                val ytdlpState = when {
+                    isUpdatingYtDlp -> EngineState.UPDATING
+                    isYtDlpReady -> EngineState.READY
+                    else -> ytdlpStatus?.state ?: EngineState.MISSING
+                }
+                val (ytdlpColor, ytdlpLabel) = when (ytdlpState) {
+                    EngineState.READY -> ElegantGreen to "Ready ✓"
+                    EngineState.UPDATING, EngineState.INSTALLING -> ElegantLavenderPrimary to "Updating..."
+                    EngineState.MISSING -> ElegantAmber to "Missing"
+                    EngineState.INVALID -> ElegantRed to "Invalid"
+                    EngineState.ERROR -> ElegantRed to "Error"
                 }
 
                 Row(
@@ -216,96 +241,168 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "FFmpeg Status: ",
+                                text = "yt-dlp Core Extractor",
                                 fontWeight = FontWeight.Bold,
                                 color = ElegantTextPrimary,
                                 fontSize = 13.sp
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(
+                                color = ytdlpColor.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = ytdlpLabel,
+                                    color = ytdlpColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Version: ${ytdlpStatus?.version ?: versionInfo?.currentVersion ?: "Not Installed"}",
+                            color = ElegantLavenderPrimary,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Button(
+                        onClick = { viewModel.updateYtDlpBinary() },
+                        enabled = !isUpdatingYtDlp,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isYtDlpReady) ElegantDarkSurfaceVariant else ElegantLavenderPrimary,
+                            contentColor = if (isYtDlpReady) ElegantTextPrimary else ElegantLavenderOnPrimary
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.height(34.dp).testTag("action_ytdlp_button")
+                    ) {
+                        if (isUpdatingYtDlp) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 1.5.dp,
+                                color = ElegantLavenderPrimary
+                            )
+                        } else {
                             Text(
-                                text = ffmpegState.displayName,
-                                color = ffmpegColor,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
+                                text = if (isYtDlpReady) "Reinstall" else "Install",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                }
 
-                        if (currentStatus?.version != null) {
+                if (isUpdatingYtDlp) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { updateProgress / 100f },
+                        color = ElegantLavenderPrimary,
+                        trackColor = ElegantDarkSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Divider(color = ElegantDarkBorder)
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Engine 2: FFmpeg Transcoder & Muxer
+                val isFFmpegAvailable = ffmpegStatus?.isAvailable == true
+                val ffmpegState = when {
+                    isUpdatingFFmpeg -> EngineState.UPDATING
+                    isFFmpegAvailable -> EngineState.READY
+                    else -> ffmpegStatus?.engineState ?: EngineState.MISSING
+                }
+                val (ffmpegColor, ffmpegLabel) = when (ffmpegState) {
+                    EngineState.READY -> ElegantGreen to "Ready ✓"
+                    EngineState.UPDATING, EngineState.INSTALLING -> ElegantLavenderPrimary to "Installing..."
+                    EngineState.MISSING -> ElegantAmber to "Missing"
+                    EngineState.INVALID -> ElegantRed to "Invalid"
+                    EngineState.ERROR -> ElegantRed to "Error"
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = currentStatus.version,
+                                text = "FFmpeg Post-Processor",
+                                fontWeight = FontWeight.Bold,
+                                color = ElegantTextPrimary,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(
+                                color = ffmpegColor.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = ffmpegLabel,
+                                    color = ffmpegColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (ffmpegStatus?.version != null) {
+                            Text(
+                                text = "FFmpeg: ${ffmpegStatus?.version}",
                                 color = ElegantLavenderPrimary,
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 maxLines = 1
                             )
-                        }
-
-                        if (currentStatus?.isFfprobeAvailable == true && currentStatus.ffprobeVersion != null) {
+                        } else {
                             Text(
-                                text = "FFprobe: ${currentStatus.ffprobeVersion}",
+                                text = "Version: Not Installed",
+                                color = ElegantTextTertiary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        if (ffmpegStatus?.ffprobeVersion != null) {
+                            Text(
+                                text = "FFprobe: ${ffmpegStatus?.ffprobeVersion}",
                                 color = ElegantTextTertiary,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,
                                 maxLines = 1
-                            )
-                        }
-
-                        if (!currentStatus?.binaryPath.isNullOrBlank()) {
-                            Text(
-                                text = "Path: ${currentStatus?.binaryPath}",
-                                color = ElegantTextTertiary,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                maxLines = 1
-                            )
-                        }
-
-                        Text(
-                            text = currentStatus?.guidance ?: "Checking FFmpeg executable status...",
-                            color = ElegantTextSecondary,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
-
-                        if (!currentStatus?.diagnosticDetails.isNullOrBlank() && ffmpegState != FFmpegState.AVAILABLE) {
-                            Text(
-                                text = currentStatus?.diagnosticDetails ?: "",
-                                color = ElegantTextTertiary,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.padding(top = 2.dp)
                             )
                         }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { viewModel.refreshDiagnostics() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh FFmpeg", tint = ElegantLavenderPrimary)
-                        }
-
-                        Button(
-                            onClick = { viewModel.installOrUpdateFFmpeg() },
-                            enabled = !isUpdatingFFmpeg,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (ffmpegState == FFmpegState.AVAILABLE) ElegantDarkSurfaceVariant else ElegantLavenderPrimary,
-                                contentColor = if (ffmpegState == FFmpegState.AVAILABLE) ElegantTextPrimary else ElegantLavenderOnPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            modifier = Modifier.height(36.dp)
-                        ) {
-                            if (isUpdatingFFmpeg) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = ElegantLavenderPrimary
-                                )
-                            } else {
-                                Text(
-                                    text = if (ffmpegState == FFmpegState.AVAILABLE) "Reinstall" else "Install",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                    Button(
+                        onClick = { viewModel.installOrUpdateFFmpeg() },
+                        enabled = !isUpdatingFFmpeg,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isFFmpegAvailable) ElegantDarkSurfaceVariant else ElegantLavenderPrimary,
+                            contentColor = if (isFFmpegAvailable) ElegantTextPrimary else ElegantLavenderOnPrimary
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.height(34.dp).testTag("action_ffmpeg_button")
+                    ) {
+                        if (isUpdatingFFmpeg) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 1.5.dp,
+                                color = ElegantLavenderPrimary
+                            )
+                        } else {
+                            Text(
+                                text = if (isFFmpegAvailable) "Reinstall" else "Install",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -318,8 +415,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         trackColor = ElegantDarkSurfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
                     )
                 }
             }
@@ -785,7 +882,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
                     OutlinedButton(
                         onClick = {
-                            val sysInfo = "yt-dlp: ${versionInfo?.currentVersion ?: "Ready"}\nFFmpeg: ${if (ffmpegStatus?.isAvailable == true) "Available" else "Not detected"}\nSettings: ${currentSettings}"
+                            val sysInfo = "ABI: ${viewModel.deviceAbi}\nyt-dlp: ${ytdlpStatus?.version ?: versionInfo?.currentVersion ?: "Not Installed"} (State: ${ytdlpStatus?.state})\nFFmpeg: ${ffmpegStatus?.version ?: "Not Installed"} (State: ${ffmpegStatus?.state})\nSettings: $currentSettings"
                             viewModel.copyToClipboard(sysInfo, "System Diagnostics")
                         },
                         shape = RoundedCornerShape(10.dp)

@@ -4,14 +4,15 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.YtDlpApplication
 import com.example.data.model.AppSettings
-import com.example.data.model.AudioFormat
 import com.example.data.model.DownloadHistoryEntity
 import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
+import com.example.data.model.EngineState
 import com.example.data.model.FormatInfo
 import com.example.data.model.HistorySortOrder
 import com.example.data.model.LogEntryEntity
@@ -24,7 +25,9 @@ import com.example.engine.FFmpegBinaryManager
 import com.example.engine.FFmpegDetector
 import com.example.engine.FFmpegStatus
 import com.example.engine.YtDlpBinaryManager
+import com.example.engine.YtDlpStatus
 import com.example.engine.YtDlpVersionInfo
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -68,8 +71,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _historySortOrder = MutableStateFlow(HistorySortOrder.NEWEST)
     val historySortOrder: StateFlow<HistorySortOrder> = _historySortOrder.asStateFlow()
 
+    // Engine Status
+    private val _ytdlpStatus = MutableStateFlow<YtDlpStatus?>(null)
+    val ytdlpStatus: StateFlow<YtDlpStatus?> = _ytdlpStatus.asStateFlow()
+
     private val _ffmpegStatus = MutableStateFlow<FFmpegStatus?>(null)
     val ffmpegStatus: StateFlow<FFmpegStatus?> = _ffmpegStatus.asStateFlow()
+
+    private val _versionInfo = MutableStateFlow<YtDlpVersionInfo?>(null)
+    val versionInfo: StateFlow<YtDlpVersionInfo?> = _versionInfo.asStateFlow()
+
+    // First-Launch Setup State
+    private val _isFirstLaunchSetupVisible = MutableStateFlow(false)
+    val isFirstLaunchSetupVisible: StateFlow<Boolean> = _isFirstLaunchSetupVisible.asStateFlow()
+
+    private val _isSettingUpEngines = MutableStateFlow(false)
+    val isSettingUpEngines: StateFlow<Boolean> = _isSettingUpEngines.asStateFlow()
+
+    private val _setupError = MutableStateFlow<String?>(null)
+    val setupError: StateFlow<String?> = _setupError.asStateFlow()
+
+    private val _ytdlpSetupProgress = MutableStateFlow(0f)
+    val ytdlpSetupProgress: StateFlow<Float> = _ytdlpSetupProgress.asStateFlow()
+
+    private val _ffmpegSetupProgress = MutableStateFlow(0f)
+    val ffmpegSetupProgress: StateFlow<Float> = _ffmpegSetupProgress.asStateFlow()
+
+    // Updates & Actions
+    private val _isUpdatingYtDlp = MutableStateFlow(false)
+    val isUpdatingYtDlp: StateFlow<Boolean> = _isUpdatingYtDlp.asStateFlow()
+
+    private val _updateProgress = MutableStateFlow(0f)
+    val updateProgress: StateFlow<Float> = _updateProgress.asStateFlow()
 
     private val _isUpdatingFFmpeg = MutableStateFlow(false)
     val isUpdatingFFmpeg: StateFlow<Boolean> = _isUpdatingFFmpeg.asStateFlow()
@@ -77,17 +110,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _ffmpegUpdateProgress = MutableStateFlow(0f)
     val ffmpegUpdateProgress: StateFlow<Float> = _ffmpegUpdateProgress.asStateFlow()
 
-    private val _versionInfo = MutableStateFlow<YtDlpVersionInfo?>(null)
-    val versionInfo: StateFlow<YtDlpVersionInfo?> = _versionInfo.asStateFlow()
+    private val _isCheckingUpdates = MutableStateFlow(false)
+    val isCheckingUpdates: StateFlow<Boolean> = _isCheckingUpdates.asStateFlow()
 
-    private val _isUpdatingYtDlp = MutableStateFlow(false)
-    val isUpdatingYtDlp: StateFlow<Boolean> = _isUpdatingYtDlp.asStateFlow()
-
-    private val _updateProgress = MutableStateFlow(0f)
-    val updateProgress: StateFlow<Float> = _updateProgress.asStateFlow()
+    private val _updateCheckMessage = MutableStateFlow<String?>(null)
+    val updateCheckMessage: StateFlow<String?> = _updateCheckMessage.asStateFlow()
 
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
+
+    private var setupJob: Job? = null
+
+    val deviceAbi: String
+        get() = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "arm64-v8a"
 
     val settings: StateFlow<AppSettings> = repository.settingsFlow
 
@@ -122,7 +157,100 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        refreshDiagnostics()
+        checkEnginesOnLaunch()
+    }
+
+    private fun checkEnginesOnLaunch() {
+        viewModelScope.launch {
+            val ytdlp = YtDlpBinaryManager.detect(getApplication())
+            val ffmpeg = FFmpegDetector.detect(getApplication())
+            _ytdlpStatus.value = ytdlp
+            _ffmpegStatus.value = ffmpeg
+            _versionInfo.value = YtDlpBinaryManager.getVersionInfo(getApplication())
+
+            AppLogger.i(
+                "MainViewModel",
+                "App launched. ABI: $deviceAbi | yt-dlp: ${ytdlp.state.name} (${ytdlp.version ?: "N/A"}) | " +
+                        "FFmpeg: ${ffmpeg.state.name} (${ffmpeg.version ?: "N/A"})"
+            )
+
+            // If either engine is not ready, prompt first-launch engine setup
+            if (!ytdlp.isReady || !ffmpeg.isAvailable) {
+                _isFirstLaunchSetupVisible.value = true
+                startFirstLaunchSetup()
+            }
+        }
+    }
+
+    fun startFirstLaunchSetup() {
+        setupJob?.cancel()
+        setupJob = viewModelScope.launch {
+            _isSettingUpEngines.value = true
+            _setupError.value = null
+            _ytdlpSetupProgress.value = 0f
+            _ffmpegSetupProgress.value = 0f
+
+            AppLogger.i("MainViewModel", "Starting automated first-launch engine setup for ABI: $deviceAbi")
+
+            // Step 1: Install & verify yt-dlp if not already ready
+            val currentYtDlp = YtDlpBinaryManager.detect(getApplication())
+            if (!currentYtDlp.isReady) {
+                AppLogger.i("MainViewModel", "Installing yt-dlp binary...")
+                val ytdlpResult = YtDlpBinaryManager.installOrUpdateBinary(getApplication()) { prog ->
+                    _ytdlpSetupProgress.value = prog
+                }
+
+                if (ytdlpResult.isFailure) {
+                    _isSettingUpEngines.value = false
+                    val errorMsg = ytdlpResult.exceptionOrNull()?.message ?: "yt-dlp setup failed"
+                    _setupError.value = errorMsg
+                    AppLogger.e("MainViewModel", "First-launch yt-dlp installation failed: $errorMsg")
+                    refreshDiagnostics()
+                    return@launch
+                }
+            }
+            _ytdlpSetupProgress.value = 100f
+            _ytdlpStatus.value = YtDlpBinaryManager.detect(getApplication())
+
+            // Step 2: Install & verify FFmpeg if not already available
+            val currentFFmpeg = FFmpegDetector.detect(getApplication())
+            if (!currentFFmpeg.isAvailable) {
+                AppLogger.i("MainViewModel", "Installing native FFmpeg binaries for $deviceAbi...")
+                val ffmpegResult = FFmpegBinaryManager.installOrUpdateFFmpeg(getApplication()) { prog ->
+                    _ffmpegSetupProgress.value = prog
+                }
+
+                if (ffmpegResult.isFailure) {
+                    _isSettingUpEngines.value = false
+                    val errorMsg = ffmpegResult.exceptionOrNull()?.message ?: "FFmpeg setup failed"
+                    _setupError.value = errorMsg
+                    AppLogger.e("MainViewModel", "First-launch FFmpeg installation failed: $errorMsg")
+                    refreshDiagnostics()
+                    return@launch
+                }
+            }
+            _ffmpegSetupProgress.value = 100f
+            _ffmpegStatus.value = FFmpegDetector.detect(getApplication())
+
+            _isSettingUpEngines.value = false
+            _setupError.value = null
+            refreshDiagnostics()
+            AppLogger.i("MainViewModel", "First-launch engine setup completed successfully! Both engines active.")
+        }
+    }
+
+    fun cancelFirstLaunchSetup() {
+        setupJob?.cancel()
+        _isSettingUpEngines.value = false
+        _isFirstLaunchSetupVisible.value = false
+    }
+
+    fun dismissFirstLaunchSetup() {
+        _isFirstLaunchSetupVisible.value = false
+    }
+
+    fun showFirstLaunchSetup() {
+        _isFirstLaunchSetupVisible.value = true
     }
 
     fun selectTab(tab: NavigationTab) {
@@ -151,8 +279,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshDiagnostics() {
         viewModelScope.launch {
+            _ytdlpStatus.value = YtDlpBinaryManager.detect(getApplication())
             _ffmpegStatus.value = FFmpegDetector.detect(getApplication())
             _versionInfo.value = YtDlpBinaryManager.getVersionInfo(getApplication())
+        }
+    }
+
+    fun checkForEngineUpdates() {
+        viewModelScope.launch {
+            _isCheckingUpdates.value = true
+            _updateCheckMessage.value = null
+            try {
+                AppLogger.i("MainViewModel", "Checking for engine updates...")
+                val latestYtdlp = YtDlpBinaryManager.fetchLatestReleaseTag()
+                val currentYtDlp = _ytdlpStatus.value?.version ?: ""
+                val ytdlpHasUpdate = latestYtdlp != null && latestYtdlp != currentYtDlp
+
+                _versionInfo.value = _versionInfo.value?.copy(
+                    latestVersion = latestYtdlp ?: currentYtDlp,
+                    isUpdateAvailable = ytdlpHasUpdate
+                )
+
+                if (ytdlpHasUpdate) {
+                    _updateCheckMessage.value = "Update available for yt-dlp ($latestYtdlp)"
+                } else {
+                    _updateCheckMessage.value = "✓ All engines are up to date."
+                }
+            } catch (e: Exception) {
+                _updateCheckMessage.value = "Failed to check for updates: ${e.message}"
+            } finally {
+                _isCheckingUpdates.value = false
+            }
         }
     }
 
@@ -302,7 +459,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isUpdatingYtDlp.value = true
             _updateProgress.value = 0f
-            val result = YtDlpBinaryManager.updateBinary(getApplication()) { prog ->
+            val result = YtDlpBinaryManager.installOrUpdateBinary(getApplication()) { prog ->
                 _updateProgress.value = prog
             }
             _isUpdatingYtDlp.value = false

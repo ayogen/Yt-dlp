@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,10 +55,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.DownloadStatus
+import com.example.ui.components.EngineSetupDialog
 import com.example.ui.downloads.DownloadsScreen
 import com.example.ui.history.HistoryScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.settings.SettingsScreen
+import com.example.ui.theme.ElegantAmber
 import com.example.ui.theme.ElegantDarkBackground
 import com.example.ui.theme.ElegantDarkBorder
 import com.example.ui.theme.ElegantDarkSurface
@@ -65,6 +68,7 @@ import com.example.ui.theme.ElegantDarkSurfaceVariant
 import com.example.ui.theme.ElegantGreen
 import com.example.ui.theme.ElegantLavenderOnPrimary
 import com.example.ui.theme.ElegantLavenderPrimary
+import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
@@ -82,7 +86,17 @@ fun MainApp(viewModel: MainViewModel) {
     val tasks by viewModel.tasks.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // Engine States
+    val ytdlpStatus by viewModel.ytdlpStatus.collectAsState()
+    val ffmpegStatus by viewModel.ffmpegStatus.collectAsState()
+    val isFirstLaunchSetupVisible by viewModel.isFirstLaunchSetupVisible.collectAsState()
+    val isSettingUpEngines by viewModel.isSettingUpEngines.collectAsState()
+    val setupError by viewModel.setupError.collectAsState()
+    val ytdlpProgress by viewModel.ytdlpSetupProgress.collectAsState()
+    val ffmpegProgress by viewModel.ffmpegSetupProgress.collectAsState()
+
     val activeDownloadsCount = tasks.count { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED }
+    val isAllReady = ytdlpStatus?.isReady == true && ffmpegStatus?.isAvailable == true
 
     LaunchedEffect(toastMessage) {
         toastMessage?.let {
@@ -96,6 +110,21 @@ fun MainApp(viewModel: MainViewModel) {
         NavItem(NavigationTab.DOWNLOADS, Icons.Filled.Download, Icons.Outlined.Download),
         NavItem(NavigationTab.HISTORY, Icons.Filled.History, Icons.Outlined.History),
         NavItem(NavigationTab.SETTINGS, Icons.Filled.Settings, Icons.Outlined.Settings)
+    )
+
+    // First-Launch Setup Modal Dialog
+    EngineSetupDialog(
+        isVisible = isFirstLaunchSetupVisible,
+        isSettingUp = isSettingUpEngines,
+        setupError = setupError,
+        ytdlpStatus = ytdlpStatus,
+        ffmpegStatus = ffmpegStatus,
+        ytdlpProgress = ytdlpProgress,
+        ffmpegProgress = ffmpegProgress,
+        deviceAbi = viewModel.deviceAbi,
+        onStartSetup = { viewModel.startFirstLaunchSetup() },
+        onCancel = { viewModel.cancelFirstLaunchSetup() },
+        onContinue = { viewModel.dismissFirstLaunchSetup() }
     )
 
     Scaffold(
@@ -139,11 +168,26 @@ fun MainApp(viewModel: MainViewModel) {
                         )
                     }
 
-                    // yt-dlp ready pill badge with glowing indicator
+                    // Dynamic engine ready pill badge
                     Surface(
                         color = ElegantDarkSurface,
                         shape = RoundedCornerShape(20.dp),
-                        border = CardDefaults.outlinedCardBorder().copy(brush = Brush.horizontalGradient(listOf(ElegantDarkBorder, ElegantDarkBorder)))
+                        border = CardDefaults.outlinedCardBorder().copy(
+                            brush = Brush.horizontalGradient(
+                                listOf(
+                                    if (isAllReady) ElegantGreen.copy(0.4f) else ElegantAmber.copy(0.4f),
+                                    ElegantDarkBorder
+                                )
+                            )
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                if (!isAllReady) {
+                                    viewModel.showFirstLaunchSetup()
+                                }
+                            }
+                            .testTag("engine_status_header_pill")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -153,14 +197,24 @@ fun MainApp(viewModel: MainViewModel) {
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(ElegantGreen)
+                                    .background(
+                                        when {
+                                            isAllReady -> ElegantGreen
+                                            isSettingUpEngines -> ElegantLavenderPrimary
+                                            else -> ElegantAmber
+                                        }
+                                    )
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "YT-DLP READY",
+                                text = when {
+                                    isAllReady -> "ENGINES READY"
+                                    isSettingUpEngines -> "PREPARING..."
+                                    else -> "SETUP ENGINES"
+                                },
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = ElegantTextSecondary,
+                                color = if (isAllReady) ElegantTextSecondary else ElegantAmber,
                                 letterSpacing = 0.5.sp
                             )
                         }

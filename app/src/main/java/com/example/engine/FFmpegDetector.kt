@@ -2,6 +2,7 @@ package com.example.engine
 
 import android.content.Context
 import android.os.Build
+import com.example.data.model.EngineState
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +35,11 @@ data class FFmpegStatus(
     val diagnosticDetails: String? = null
 ) {
     val isAvailable: Boolean get() = state == FFmpegState.AVAILABLE
+    val engineState: EngineState get() = when (state) {
+        FFmpegState.AVAILABLE -> EngineState.READY
+        FFmpegState.MISSING -> EngineState.MISSING
+        FFmpegState.INVALID_NOT_EXECUTABLE -> EngineState.INVALID
+    }
 }
 
 object FFmpegDetector {

@@ -2,12 +2,14 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.model.EngineState
 import com.example.data.model.MediaType
 import com.example.download.StorageUtils
 import com.example.engine.FFmpegBinaryManager
 import com.example.engine.FFmpegDetector
 import com.example.engine.FFmpegState
 import com.example.engine.FilenameFormatter
+import com.example.engine.YtDlpBinaryManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -53,11 +55,20 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `test ytdlp detector reports status accurately`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val status = YtDlpBinaryManager.detect(context)
+        assertNotNull(status)
+        assertNotNull(status.state)
+    }
+
+    @Test
     fun `test ffmpeg detector reports status accurately`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val status = FFmpegDetector.detect(context)
         assertNotNull(status)
         assertNotNull(status.state)
+        assertNotNull(status.engineState)
         assertNotNull(status.guidance)
     }
 
@@ -74,9 +85,8 @@ class ExampleRobolectricTest {
     @Test
     fun `test detector cleans up 0-byte corrupt file`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val binDir = FFmpegDetector.getPreferredBinDir(context)
         val ffmpegFile = FFmpegDetector.getPreferredFFmpegFile(context)
-        
+
         // Write 0-byte file
         ffmpegFile.parentFile?.mkdirs()
         ffmpegFile.writeBytes(ByteArray(0))
@@ -85,6 +95,7 @@ class ExampleRobolectricTest {
 
         val status = FFmpegDetector.detect(context)
         assertEquals(FFmpegState.MISSING, status.state)
+        assertEquals(EngineState.MISSING, status.engineState)
         assertFalse("0-byte file should be automatically purged", ffmpegFile.exists())
     }
 

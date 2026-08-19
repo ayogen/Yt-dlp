@@ -69,6 +69,15 @@ enum class LogLevel {
     DEBUG, INFO, WARNING, ERROR
 }
 
+enum class EngineState(val displayName: String) {
+    MISSING("Missing"),
+    INSTALLING("Installing"),
+    READY("Ready"),
+    INVALID("Invalid / Not Executable"),
+    UPDATING("Updating"),
+    ERROR("Error")
+}
+
 enum class HistorySortOrder(val displayName: String) {
     NEWEST("Newest First"),
     OLDEST("Oldest First"),
