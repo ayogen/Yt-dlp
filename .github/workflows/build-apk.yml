@@ -36,19 +36,15 @@ jobs:
           echo "Debug keystore verified at $GITHUB_WORKSPACE/debug.keystore"
           ls -lh "$GITHUB_WORKSPACE/debug.keystore"
 
-      - name: Setup Gradle wrapper
-        run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-          else
-            gradle wrapper
-            chmod +x ./gradlew
-          fi
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
       - name: Build Debug APK
         env:
           GRADLE_OPTS: "-Djava.awt.headless=true -Xmx4096m"
-        run: ./gradlew assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --stacktrace
 
       - name: Verify APK generation
         run: |
