@@ -4,15 +4,19 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.MediaType
 import com.example.download.StorageUtils
+import com.example.engine.FFmpegBinaryManager
 import com.example.engine.FFmpegDetector
+import com.example.engine.FFmpegState
 import com.example.engine.FilenameFormatter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -49,10 +53,38 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test ffmpeg detector reports status`() {
+    fun `test ffmpeg detector reports status accurately`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val status = FFmpegDetector.detect(context)
         assertNotNull(status)
         assertNotNull(status.state)
+        assertNotNull(status.guidance)
+    }
+
+    @Test
+    fun `test ffmpeg candidate sources resolution`() {
+        val sources = FFmpegBinaryManager.getCandidateSourcesForDevice()
+        assertTrue("Must have at least one candidate source for device", sources.isNotEmpty())
+        for (candidate in sources) {
+            assertTrue("Candidate must have valid URLs", candidate.urls.isNotEmpty())
+            assertTrue("URL must point to zip", candidate.urls.all { it.endsWith(".zip") })
+        }
+    }
+
+    @Test
+    fun `test detector cleans up 0-byte corrupt file`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val binDir = FFmpegDetector.getPreferredBinDir(context)
+        val ffmpegFile = FFmpegDetector.getPreferredFFmpegFile(context)
+        
+        // Write 0-byte file
+        ffmpegFile.parentFile?.mkdirs()
+        ffmpegFile.writeBytes(ByteArray(0))
+        assertTrue(ffmpegFile.exists())
+        assertEquals(0L, ffmpegFile.length())
+
+        val status = FFmpegDetector.detect(context)
+        assertEquals(FFmpegState.MISSING, status.state)
+        assertFalse("0-byte file should be automatically purged", ffmpegFile.exists())
     }
 }

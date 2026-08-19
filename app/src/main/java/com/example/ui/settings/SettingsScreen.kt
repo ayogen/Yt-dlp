@@ -200,7 +200,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // FFmpeg Integration Status
-                val ffmpegState = ffmpegStatus?.state ?: FFmpegState.MISSING
+                val currentStatus = ffmpegStatus
+                val ffmpegState = currentStatus?.state ?: FFmpegState.MISSING
                 val ffmpegColor = when (ffmpegState) {
                     FFmpegState.AVAILABLE -> ElegantGreen
                     FFmpegState.MISSING -> ElegantAmber
@@ -228,19 +229,29 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             )
                         }
 
-                        if (ffmpegStatus?.version != null) {
+                        if (currentStatus?.version != null) {
                             Text(
-                                text = ffmpegStatus?.version ?: "",
-                                color = ElegantTextTertiary,
+                                text = currentStatus.version,
+                                color = ElegantLavenderPrimary,
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 maxLines = 1
                             )
                         }
 
-                        if (!ffmpegStatus?.binaryPath.isNullOrBlank()) {
+                        if (currentStatus?.isFfprobeAvailable == true && currentStatus.ffprobeVersion != null) {
                             Text(
-                                text = "Path: ${ffmpegStatus?.binaryPath}",
+                                text = "FFprobe: ${currentStatus.ffprobeVersion}",
+                                color = ElegantTextTertiary,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1
+                            )
+                        }
+
+                        if (!currentStatus?.binaryPath.isNullOrBlank()) {
+                            Text(
+                                text = "Path: ${currentStatus?.binaryPath}",
                                 color = ElegantTextTertiary,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,
@@ -249,11 +260,21 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         }
 
                         Text(
-                            text = ffmpegStatus?.guidance ?: "Checking FFmpeg executable status...",
+                            text = currentStatus?.guidance ?: "Checking FFmpeg executable status...",
                             color = ElegantTextSecondary,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(top = 2.dp)
                         )
+
+                        if (!currentStatus?.diagnosticDetails.isNullOrBlank() && ffmpegState != FFmpegState.AVAILABLE) {
+                            Text(
+                                text = currentStatus?.diagnosticDetails ?: "",
+                                color = ElegantTextTertiary,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
