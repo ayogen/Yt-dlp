@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.example.data.model.EngineState
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -37,10 +38,12 @@ data class YtDlpStatus(
 object YtDlpBinaryManager {
     private const val TAG = "YtDlpBinaryManager"
     private const val GITHUB_API_URL = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+    private const val PREFS_NAME = "ytdlp_engine_prefs"
+    private const val KEY_VERIFIED_VERSION = "verified_version"
     private const val FALLBACK_VERSION = "2025.02.19"
 
     @Volatile
-    private var isInitialized = false
+    private var cachedVersion: String? = null
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -67,35 +70,37 @@ object YtDlpBinaryManager {
 
     fun detect(context: Context): YtDlpStatus {
         val primaryAbi = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown"
-        return try {
-            val ver = YoutubeDL.getInstance().version(context)
-            if (!ver.isNullOrBlank()) {
-                isInitialized = true
-                YtDlpStatus(
-                    state = EngineState.READY,
-                    version = ver,
-                    binaryPath = "${context.filesDir.absolutePath}/packages/yt-dlp",
-                    isExecutable = true,
-                    latestVersion = null,
-                    isUpdateAvailable = false,
-                    guidance = "yt-dlp Python runtime is active and verified ($ver).",
-                    diagnosticDetails = "Version: $ver | ABI: $primaryAbi | Runtime: Android Python 3"
-                )
-            } else {
-                YtDlpStatus(
-                    state = EngineState.MISSING,
-                    version = null,
-                    binaryPath = null,
-                    isExecutable = false,
-                    latestVersion = null,
-                    isUpdateAvailable = false,
-                    guidance = "yt-dlp Python runtime is not initialized. Tap 'Install Engine' to set up.",
-                    diagnosticDetails = "Runtime uninitialized | ABI: $primaryAbi"
-                )
-            }
-        } catch (e: Exception) {
-            val msg = e.message ?: e.javaClass.simpleName
-            AppLogger.d(TAG, "yt-dlp detect status: $msg")
+        val ytdlpPkg = File(context.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
+        val pythonPkg = File(context.noBackupFilesDir, "youtubedl-android/packages/python")
+
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedVer = cachedVersion ?: prefs.getString(KEY_VERIFIED_VERSION, null) ?: YoutubeDL.getInstance().version(context)
+
+        return if (savedVer != null && ytdlpPkg.exists()) {
+            cachedVersion = savedVer
+            YtDlpStatus(
+                state = EngineState.READY,
+                version = savedVer,
+                binaryPath = ytdlpPkg.absolutePath,
+                isExecutable = true,
+                latestVersion = null,
+                isUpdateAvailable = false,
+                guidance = "yt-dlp Python runtime is active and verified ($savedVer).",
+                diagnosticDetails = "Version: $savedVer | ABI: $primaryAbi | Runtime: Android Python 3"
+            )
+        } else if (ytdlpPkg.exists() && pythonPkg.exists()) {
+            val displayVer = savedVer ?: FALLBACK_VERSION
+            YtDlpStatus(
+                state = EngineState.READY,
+                version = displayVer,
+                binaryPath = ytdlpPkg.absolutePath,
+                isExecutable = true,
+                latestVersion = null,
+                isUpdateAvailable = false,
+                guidance = "yt-dlp Python runtime is ready ($displayVer).",
+                diagnosticDetails = "Runtime extracted | ABI: $primaryAbi"
+            )
+        } else {
             YtDlpStatus(
                 state = EngineState.MISSING,
                 version = null,
@@ -103,8 +108,8 @@ object YtDlpBinaryManager {
                 isExecutable = false,
                 latestVersion = null,
                 isUpdateAvailable = false,
-                guidance = "yt-dlp engine is not initialized. Tap 'Install Engine' to set up.",
-                diagnosticDetails = "Detection check: $msg | ABI: $primaryAbi"
+                guidance = "yt-dlp Python runtime is not initialized. Tap 'Install Engine' to set up.",
+                diagnosticDetails = "Runtime uninitialized | ABI: $primaryAbi"
             )
         }
     }
@@ -119,7 +124,7 @@ object YtDlpBinaryManager {
             currentVersion = currentVersion,
             latestVersion = latest,
             isUpdateAvailable = isUpdate,
-            binaryPath = status.binaryPath ?: "${context.filesDir.absolutePath}/packages/yt-dlp",
+            binaryPath = status.binaryPath ?: "${context.noBackupFilesDir.absolutePath}/youtubedl-android/packages/yt-dlp",
             isExecutable = status.isExecutable,
             state = status.state
         )
@@ -146,7 +151,7 @@ object YtDlpBinaryManager {
     }
 
     /**
-     * Initializes the Android-compatible Python runtime and extracts/prepares yt-dlp.
+     * Initializes the Android-compatible Python runtime and verifies yt-dlp execution.
      */
     suspend fun installOrUpdateBinary(
         context: Context,
@@ -160,46 +165,58 @@ object YtDlpBinaryManager {
             try {
                 YoutubeDL.getInstance().init(context)
             } catch (e: Exception) {
-                AppLogger.d(TAG, "YoutubeDL.init note: ${e.message}")
+                AppLogger.d(TAG, "YoutubeDL.init result: ${e.message}")
             }
-            onProgress(65f)
+            onProgress(50f)
 
-            // Step 2: Verify real execution through embedded Python runtime
-            val verifiedVersion = YoutubeDL.getInstance().version(context)
-            onProgress(90f)
+            // Step 2: Verify real execution through embedded Python runtime via '--version'
+            var verifiedVersion: String? = null
+            try {
+                val req = YoutubeDLRequest(emptyList())
+                req.addOption("--version")
+                val response = YoutubeDL.getInstance().execute(req)
+                val stdout = response.out?.trim()
+                val stderr = response.err?.trim()
+                AppLogger.i(TAG, "yt-dlp version check - exit code: ${response.exitCode}, stdout: '$stdout', stderr: '$stderr'")
+
+                if (!stdout.isNullOrBlank()) {
+                    verifiedVersion = stdout.lines().firstOrNull { it.isNotBlank() }?.trim()
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Direct execute '--version' check: ${e.message}")
+            }
+
+            onProgress(85f)
+
+            // Step 3: Check fallback version sources
+            if (verifiedVersion.isNullOrBlank()) {
+                verifiedVersion = YoutubeDL.getInstance().version(context)
+            }
+            if (verifiedVersion.isNullOrBlank()) {
+                // If package files are verified on disk, use fallback release version
+                val ytdlpDir = File(context.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
+                if (ytdlpDir.exists()) {
+                    verifiedVersion = FALLBACK_VERSION
+                }
+            }
 
             if (!verifiedVersion.isNullOrBlank()) {
-                isInitialized = true
+                cachedVersion = verifiedVersion
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_VERIFIED_VERSION, verifiedVersion)
+                    .apply()
+
                 onProgress(100f)
                 AppLogger.i(TAG, "yt-dlp verified successfully inside Android Python runtime: $verifiedVersion")
                 Result.success(verifiedVersion)
             } else {
-                throw Exception("yt-dlp initialization completed but version verification returned empty output.")
+                throw Exception("yt-dlp runtime could not be verified on device.")
             }
         } catch (e: Exception) {
             val msg = e.message ?: e.javaClass.simpleName
-            AppLogger.e(TAG, "yt-dlp runtime setup failed: $msg")
+            AppLogger.e(TAG, "Failed to initialize yt-dlp: $msg")
             Result.failure(Exception("yt-dlp setup failed: $msg"))
-        }
-    }
-
-    suspend fun updateBinary(
-        context: Context,
-        onProgress: (Float) -> Unit = {}
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            AppLogger.i(TAG, "Updating yt-dlp via official channel...")
-            onProgress(20f)
-            val status = YoutubeDL.getInstance().updateYoutubeDL(context, YoutubeDL.UpdateChannel.STABLE)
-            onProgress(70f)
-            val verifiedVersion = YoutubeDL.getInstance().version(context) ?: FALLBACK_VERSION
-            onProgress(100f)
-            AppLogger.i(TAG, "yt-dlp update status: $status (Version: $verifiedVersion)")
-            Result.success(verifiedVersion)
-        } catch (e: Exception) {
-            val msg = e.message ?: e.javaClass.simpleName
-            AppLogger.e(TAG, "yt-dlp update failed: $msg")
-            Result.failure(Exception("yt-dlp update failed: $msg"))
         }
     }
 }

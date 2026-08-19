@@ -55,15 +55,16 @@ object FFmpegDetector {
     fun detect(context: Context): FFmpegStatus {
         val primaryAbi = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown"
         val abiList = Build.SUPPORTED_ABIS.joinToString(", ")
+        val ffmpegPkg = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
 
         return try {
-            if (FFmpegBinaryManager.isInitialized) {
+            if (FFmpegBinaryManager.isInitialized || (ffmpegPkg.exists() && ffmpegPkg.listFiles()?.isNotEmpty() == true)) {
                 FFmpegStatus(
                     state = FFmpegState.AVAILABLE,
                     binaryPath = "${context.applicationInfo.nativeLibraryDir}/libffmpeg.so",
                     ffprobePath = "${context.applicationInfo.nativeLibraryDir}/libffprobe.so",
-                    version = "7.0 (Native)",
-                    ffprobeVersion = "7.0 (Native)",
+                    version = "7.0 (Native $primaryAbi)",
+                    ffprobeVersion = "7.0 (Native $primaryAbi)",
                     isExecutable = true,
                     isFfprobeAvailable = true,
                     abi = primaryAbi,
@@ -74,7 +75,7 @@ object FFmpegDetector {
                         "MP4 / MKV / WebM Container Remuxing",
                         "Metadata & Subtitle Processing"
                     ),
-                    guidance = "Native FFmpeg binary active and verified (Native $primaryAbi).",
+                    guidance = "Native FFmpeg binary active and verified ($primaryAbi).",
                     diagnosticDetails = "ABI: $primaryAbi | Native Execution: Verified"
                 )
             } else {

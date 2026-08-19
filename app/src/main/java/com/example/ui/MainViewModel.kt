@@ -192,24 +192,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             AppLogger.i("MainViewModel", "Starting automated first-launch engine setup for ABI: $deviceAbi")
 
+            val errors = mutableListOf<String>()
+
             // Step 1: Install & verify yt-dlp if not already ready
             val currentYtDlp = YtDlpBinaryManager.detect(getApplication())
             if (!currentYtDlp.isReady) {
-                AppLogger.i("MainViewModel", "Installing yt-dlp binary...")
+                AppLogger.i("MainViewModel", "Installing yt-dlp runtime...")
                 val ytdlpResult = YtDlpBinaryManager.installOrUpdateBinary(getApplication()) { prog ->
                     _ytdlpSetupProgress.value = prog
                 }
 
                 if (ytdlpResult.isFailure) {
-                    _isSettingUpEngines.value = false
                     val errorMsg = ytdlpResult.exceptionOrNull()?.message ?: "yt-dlp setup failed"
-                    _setupError.value = errorMsg
+                    errors.add("yt-dlp: $errorMsg")
                     AppLogger.e("MainViewModel", "First-launch yt-dlp installation failed: $errorMsg")
-                    refreshDiagnostics()
-                    return@launch
+                } else {
+                    _ytdlpSetupProgress.value = 100f
                 }
+            } else {
+                _ytdlpSetupProgress.value = 100f
             }
-            _ytdlpSetupProgress.value = 100f
             _ytdlpStatus.value = YtDlpBinaryManager.detect(getApplication())
 
             // Step 2: Install & verify FFmpeg if not already available
@@ -221,21 +223,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (ffmpegResult.isFailure) {
-                    _isSettingUpEngines.value = false
                     val errorMsg = ffmpegResult.exceptionOrNull()?.message ?: "FFmpeg setup failed"
-                    _setupError.value = errorMsg
+                    errors.add("FFmpeg: $errorMsg")
                     AppLogger.e("MainViewModel", "First-launch FFmpeg installation failed: $errorMsg")
-                    refreshDiagnostics()
-                    return@launch
+                } else {
+                    _ffmpegSetupProgress.value = 100f
                 }
+            } else {
+                _ffmpegSetupProgress.value = 100f
             }
-            _ffmpegSetupProgress.value = 100f
             _ffmpegStatus.value = FFmpegDetector.detect(getApplication())
 
             _isSettingUpEngines.value = false
-            _setupError.value = null
+            if (errors.isNotEmpty()) {
+                _setupError.value = errors.joinToString("\n")
+            } else {
+                _setupError.value = null
+                AppLogger.i("MainViewModel", "First-launch engine setup completed successfully! Both engines active.")
+            }
             refreshDiagnostics()
-            AppLogger.i("MainViewModel", "First-launch engine setup completed successfully! Both engines active.")
         }
     }
 
