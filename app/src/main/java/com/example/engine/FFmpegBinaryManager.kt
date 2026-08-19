@@ -10,7 +10,6 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
@@ -42,8 +41,7 @@ object FFmpegBinaryManager {
     )
 
     /**
-     * Resolves high-priority verified native Android static binary URLs for the supported ABIs.
-     * Uses standalone static PIE executables built specifically for Android Bionic runtime.
+     * Resolves high-priority verified native Android static binary URLs in the order of Build.SUPPORTED_ABIS.
      */
     fun getCandidateSourcesForDevice(): List<AbiCandidate> {
         val supported = Build.SUPPORTED_ABIS
@@ -91,30 +89,58 @@ object FFmpegBinaryManager {
     private fun normalizeAbi(rawAbi: String): String {
         return when {
             rawAbi.contains("arm64", ignoreCase = true) || rawAbi.contains("aarch64", ignoreCase = true) -> "arm64-v8a"
-            rawAbi.contains("armeabi", ignoreCase = true) || rawAbi.contains("v7a", ignoreCase = true) -> "armeabi-v7a"
+            rawAbi.contains("armeabi-v7a", ignoreCase = true) || rawAbi.contains("v7a", ignoreCase = true) -> "armeabi-v7a"
+            rawAbi.contains("armeabi", ignoreCase = true) -> "armeabi"
             rawAbi.contains("x86_64", ignoreCase = true) || rawAbi.contains("amd64", ignoreCase = true) -> "x86_64"
             rawAbi.contains("x86", ignoreCase = true) || rawAbi.contains("i686", ignoreCase = true) || rawAbi.contains("i386", ignoreCase = true) -> "x86"
             else -> rawAbi
         }
     }
 
+    /**
+     * Explicitly sets full executable permissions on a file via both File API and chmod 755.
+     */
+    fun applyFullExecutablePermissions(file: File): Boolean {
+        if (!file.exists()) return false
+
+        try {
+            file.setReadable(true, false)
+            file.setWritable(true, false)
+            file.setExecutable(true, false)
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "File API permission set failed on ${file.name}: ${e.message}")
+        }
+
+        try {
+            val pb = ProcessBuilder("chmod", "755", file.absolutePath)
+            val p = pb.start()
+            p.waitFor(2, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            // Ignore chmod process exception if restricted
+        }
+
+        return file.exists() && file.length() > 0 && file.canExecute()
+    }
+
     suspend fun installOrUpdateFFmpeg(
         context: Context,
         onProgress: (Float) -> Unit = {}
     ): Result<FFmpegStatus> = withContext(Dispatchers.IO) {
+        val supportedAbis = Build.SUPPORTED_ABIS
+        val primaryAbi = if (supportedAbis.isNotEmpty()) supportedAbis[0] else "arm64-v8a"
         val abiCandidates = getCandidateSourcesForDevice()
         val finalBinDir = getBinDir(context)
         val finalFFmpegFile = getFFmpegFile(context)
         val finalFFprobeFile = getFFprobeFile(context)
 
-        AppLogger.i(TAG, "Starting native FFmpeg installation. Supported ABIs: ${Build.SUPPORTED_ABIS.joinToString(", ")}")
+        AppLogger.i(TAG, "Starting native FFmpeg installation. Supported ABIs (in order): ${supportedAbis.joinToString(", ")}. Primary: $primaryAbi")
         onProgress(5f)
 
         var lastFailureReason = "No matching native binary source found"
 
-        // Iterate through device supported ABIs and their candidate URLs
+        // Iterate through device supported ABIs strictly in order of Build.SUPPORTED_ABIS priority
         for (candidate in abiCandidates) {
-            AppLogger.i(TAG, "Evaluating sources for ABI: ${candidate.abiName}")
+            AppLogger.i(TAG, "Targeting binary sources for ABI: ${candidate.abiName}")
 
             for (url in candidate.urls) {
                 val stagingDir = File(context.cacheDir, "ffmpeg_stage_${System.currentTimeMillis()}")
@@ -138,7 +164,7 @@ object FFmpegBinaryManager {
                     val contentType = response.header("Content-Type") ?: ""
                     if (contentType.contains("text/html", ignoreCase = true) || contentType.contains("text/plain", ignoreCase = true)) {
                         response.close()
-                        throw Exception("Server returned HTML or text error page instead of binary package: $contentType")
+                        throw Exception("Server returned HTML error page instead of binary package: $contentType")
                     }
 
                     val body = response.body ?: run {
@@ -158,8 +184,8 @@ object FFmpegBinaryManager {
                                 output.write(buffer, 0, read)
                                 totalRead += read
                                 if (contentLength > 0) {
-                                    val pct = 10f + (totalRead.toFloat() / contentLength.toFloat()) * 70f
-                                    onProgress(pct.coerceIn(10f, 80f))
+                                    val pct = 10f + (totalRead.toFloat() / contentLength.toFloat()) * 65f
+                                    onProgress(pct.coerceIn(10f, 75f))
                                 }
                             }
                         }
@@ -195,87 +221,117 @@ object FFmpegBinaryManager {
                         downloadedPackage.renameTo(standalone)
                     }
 
-                    // Locate and validate candidates in staging
-                    val candidateFfmpeg = findExecutableInTree(extractedBinDir, "ffmpeg")
+                    onProgress(80f)
+
+                    // Locate ABI-specific candidate according to Build.SUPPORTED_ABIS order
+                    val candidateFfmpeg = findBestExecutableForDevice(extractedBinDir, "ffmpeg", supportedAbis)
                     if (candidateFfmpeg == null || !candidateFfmpeg.exists()) {
-                        throw Exception("No valid 'ffmpeg' executable found inside downloaded archive")
+                        throw Exception("No valid 'ffmpeg' executable matching device ABIs found inside archive")
                     }
 
-                    // Strict rejection of forbidden file types
-                    val name = candidateFfmpeg.name.lowercase()
-                    if (name.endsWith(".aar") || name.endsWith(".so") || name.endsWith(".dll") || name.endsWith(".exe") || name.endsWith(".html")) {
-                        throw Exception("Rejected non-standalone file: $name")
+                    // Explicitly set executable permissions BEFORE pre-flight test
+                    val permissionsOk = applyFullExecutablePermissions(candidateFfmpeg)
+
+                    AppLogger.i(
+                        TAG,
+                        "Selected candidate: ${candidateFfmpeg.absolutePath} | " +
+                                "Size: ${candidateFfmpeg.length()} bytes | " +
+                                "canRead: ${candidateFfmpeg.canRead()} | " +
+                                "canWrite: ${candidateFfmpeg.canWrite()} | " +
+                                "canExecute: ${candidateFfmpeg.canExecute()} (applied: $permissionsOk)"
+                    )
+
+                    if (!candidateFfmpeg.canExecute()) {
+                        throw Exception("FFmpeg executable permission/setup failed: Could not set executable permissions on ${candidateFfmpeg.absolutePath}")
                     }
 
-                    FFmpegDetector.ensureExecutable(candidateFfmpeg)
                     onProgress(85f)
 
-                    // PRE-REPLACEMENT VERIFICATION:
-                    // Actually test candidate binary with `ffmpeg -version` before replacing existing
-                    AppLogger.i(TAG, "Verifying candidate binary at ${candidateFfmpeg.absolutePath}...")
-                    val testResult = FFmpegDetector.executeBinary(candidateFfmpeg, "ffmpeg")
+                    // PRE-FLIGHT VERIFICATION:
+                    // Must execute candidate binary with `-version` before touching app bin directory
+                    AppLogger.i(TAG, "Running pre-flight verification on: ${candidateFfmpeg.absolutePath} -version")
+                    val preFlightResult = FFmpegDetector.executeBinary(candidateFfmpeg, "ffmpeg")
 
-                    if (!testResult.isSuccess || testResult.versionLine == null) {
-                        val failMsg = testResult.errorMessage ?: "Exit code ${testResult.exitCode}"
-                        throw Exception("Pre-flight execution verification failed on device architecture: $failMsg")
+                    if (!preFlightResult.isSuccess || preFlightResult.versionLine == null) {
+                        val failMsg = preFlightResult.errorMessage ?: "Exit code ${preFlightResult.exitCode}"
+                        throw Exception("Pre-flight execution verification failed on ${candidateFfmpeg.absolutePath}: $failMsg")
                     }
 
-                    AppLogger.i(TAG, "Candidate binary passed verification: ${testResult.versionLine}")
-                    onProgress(92f)
+                    AppLogger.i(TAG, "Pre-flight verification passed: ${preFlightResult.versionLine}")
+                    onProgress(90f)
 
-                    // Candidate is verified working! Now perform atomic swap into app bin directory
+                    // Candidate verified! Copy executable into final filesDir/bin/ffmpeg
+                    finalBinDir.mkdirs()
                     val tempFinalFfmpeg = File(finalBinDir, "ffmpeg_install_${System.currentTimeMillis()}.tmp")
                     if (tempFinalFfmpeg.exists()) tempFinalFfmpeg.delete()
 
                     copyFileWithPermissions(candidateFfmpeg, tempFinalFfmpeg)
-                    FFmpegDetector.ensureExecutable(tempFinalFfmpeg)
+                    val finalPermOk = applyFullExecutablePermissions(tempFinalFfmpeg)
 
-                    // Atomic replace
                     if (finalFFmpegFile.exists()) {
                         finalFFmpegFile.delete()
                     }
                     if (!tempFinalFfmpeg.renameTo(finalFFmpegFile)) {
-                        // If renameTo fails across file boundaries, copy and delete
                         copyFileWithPermissions(tempFinalFfmpeg, finalFFmpegFile)
                         tempFinalFfmpeg.delete()
                     }
-                    FFmpegDetector.ensureExecutable(finalFFmpegFile)
 
-                    // Also check and install ffprobe if present in archive
-                    val candidateFfprobe = findExecutableInTree(extractedBinDir, "ffprobe")
+                    // Set executable permissions AGAIN on final destination
+                    applyFullExecutablePermissions(finalFFmpegFile)
+
+                    // POST-INSTALL VERIFICATION:
+                    // Execute installed binary at context.filesDir/bin/ffmpeg -version
+                    AppLogger.i(TAG, "Running final verification on installed binary: ${finalFFmpegFile.absolutePath} -version")
+                    val postInstallResult = FFmpegDetector.executeBinary(finalFFmpegFile, "ffmpeg")
+
+                    if (!postInstallResult.isSuccess || postInstallResult.versionLine == null) {
+                        // Purge invalid installed file
+                        try { finalFFmpegFile.delete() } catch (e: Exception) {}
+                        val failMsg = postInstallResult.errorMessage ?: "Exit code ${postInstallResult.exitCode}"
+                        throw Exception("Final binary verification failed on ${finalFFmpegFile.absolutePath}: $failMsg")
+                    }
+
+                    AppLogger.i(TAG, "Installed FFmpeg verified successfully: ${postInstallResult.versionLine}")
+
+                    // Check and install ffprobe companion if present in archive
+                    val candidateFfprobe = findBestExecutableForDevice(extractedBinDir, "ffprobe", supportedAbis)
                     if (candidateFfprobe != null && candidateFfprobe.exists()) {
-                        FFmpegDetector.ensureExecutable(candidateFfprobe)
-                        val probeTest = FFmpegDetector.executeBinary(candidateFfprobe, "ffprobe")
-                        if (probeTest.isSuccess) {
+                        applyFullExecutablePermissions(candidateFfprobe)
+                        val probePreFlight = FFmpegDetector.executeBinary(candidateFfprobe, "ffprobe")
+                        if (probePreFlight.isSuccess) {
                             val tempFinalProbe = File(finalBinDir, "ffprobe_install_${System.currentTimeMillis()}.tmp")
                             copyFileWithPermissions(candidateFfprobe, tempFinalProbe)
-                            FFmpegDetector.ensureExecutable(tempFinalProbe)
+                            applyFullExecutablePermissions(tempFinalProbe)
                             if (finalFFprobeFile.exists()) finalFFprobeFile.delete()
                             if (!tempFinalProbe.renameTo(finalFFprobeFile)) {
                                 copyFileWithPermissions(tempFinalProbe, finalFFprobeFile)
                                 tempFinalProbe.delete()
                             }
-                            FFmpegDetector.ensureExecutable(finalFFprobeFile)
-                            AppLogger.i(TAG, "FFprobe installed and verified: ${probeTest.versionLine}")
+                            applyFullExecutablePermissions(finalFFprobeFile)
+                            val probeFinalTest = FFmpegDetector.executeBinary(finalFFprobeFile, "ffprobe")
+                            if (probeFinalTest.isSuccess) {
+                                AppLogger.i(TAG, "FFprobe companion installed and verified: ${probeFinalTest.versionLine}")
+                            }
                         }
                     }
 
                     onProgress(100f)
 
-                    // Final system status check
+                    // Delete staging directory on success
+                    deleteRecursive(stagingDir)
+
+                    // Final status detection
                     val finalStatus = FFmpegDetector.detect(context)
                     if (finalStatus.isAvailable) {
-                        AppLogger.i(TAG, "FFmpeg successfully installed and active: ${finalStatus.version}")
-                        // Clean up staging directory
-                        deleteRecursive(stagingDir)
+                        AppLogger.i(TAG, "FFmpeg installation completed successfully (${finalStatus.version})")
                         return@withContext Result.success(finalStatus)
                     } else {
-                        throw Exception("Post-install status check failed: ${finalStatus.guidance}")
+                        throw Exception("Post-install status check reported non-available state: ${finalStatus.guidance}")
                     }
 
                 } catch (e: Exception) {
                     val msg = e.message ?: e.javaClass.simpleName
-                    AppLogger.w(TAG, "Failed installation attempt from $url: $msg")
+                    AppLogger.w(TAG, "Installation failed with source $url: $msg")
                     lastFailureReason = msg
                 } finally {
                     deleteRecursive(stagingDir)
@@ -283,12 +339,26 @@ object FFmpegBinaryManager {
             }
         }
 
-        // If installation failed completely, ensure no corrupt 0-byte binary remains
+        // Clean up any corrupt state and perform final detect
         val finalStatus = FFmpegDetector.detect(context)
         if (finalStatus.isAvailable) {
             Result.success(finalStatus)
         } else {
-            Result.failure(Exception("FFmpeg installation failed: $lastFailureReason. Please check network connection."))
+            val descriptiveError = when {
+                lastFailureReason.contains("permission", ignoreCase = true) || lastFailureReason.contains("chmod", ignoreCase = true) || lastFailureReason.contains("error=13", ignoreCase = true) -> {
+                    "FFmpeg executable permission/setup failed: $lastFailureReason"
+                }
+                lastFailureReason.contains("Pre-flight", ignoreCase = true) || lastFailureReason.contains("Exec format", ignoreCase = true) -> {
+                    "FFmpeg execution compatibility verification failed: $lastFailureReason"
+                }
+                lastFailureReason.contains("HTTP", ignoreCase = true) || lastFailureReason.contains("connect", ignoreCase = true) || lastFailureReason.contains("timeout", ignoreCase = true) -> {
+                    "Network error downloading FFmpeg package: $lastFailureReason"
+                }
+                else -> {
+                    "FFmpeg installation failed: $lastFailureReason"
+                }
+            }
+            Result.failure(Exception(descriptiveError))
         }
     }
 
@@ -298,7 +368,6 @@ object FFmpegBinaryManager {
             while (entry != null) {
                 val entryName = entry.name
                 if (!entry.isDirectory) {
-                    // Normalize target file
                     val safeName = entryName.replace("../", "")
                     val targetFile = File(outputDir, safeName)
                     targetFile.parentFile?.mkdirs()
@@ -307,11 +376,10 @@ object FFmpegBinaryManager {
                         zis.copyTo(fos)
                     }
 
-                    // If file is named ffmpeg or ffprobe, set executable bit
-                    val simpleName = targetFile.name
+                    // Apply permissions immediately on extraction
+                    val simpleName = targetFile.name.lowercase()
                     if (simpleName == "ffmpeg" || simpleName == "ffprobe" || simpleName.startsWith("lib")) {
-                        targetFile.setReadable(true, false)
-                        targetFile.setExecutable(true, false)
+                        applyFullExecutablePermissions(targetFile)
                     }
                 }
                 zis.closeEntry()
@@ -320,30 +388,54 @@ object FFmpegBinaryManager {
         }
     }
 
-    private fun findExecutableInTree(dir: File, targetName: String): File? {
-        if (!dir.exists() || !dir.isDirectory) return null
-        val files = dir.listFiles() ?: return null
+    /**
+     * Recursively locates all candidates with name matching targetName, excluding .so, .aar, .dll, .exe, .html,
+     * and selects the candidate that strictly best matches the device Build.SUPPORTED_ABIS priority order.
+     */
+    fun findBestExecutableForDevice(dir: File, targetName: String, supportedAbis: Array<String>): File? {
+        val allMatchingFiles = mutableListOf<File>()
+        collectMatchingFiles(dir, targetName, allMatchingFiles)
 
-        // 1. Direct match
+        if (allMatchingFiles.isEmpty()) return null
+        if (allMatchingFiles.size == 1) return allMatchingFiles.first()
+
+        AppLogger.i(TAG, "Found ${allMatchingFiles.size} matching candidate binaries: ${allMatchingFiles.map { it.absolutePath }}")
+
+        // Score candidates based on Build.SUPPORTED_ABIS order
+        for ((priorityIndex, abi) in supportedAbis.withIndex()) {
+            val normalizedAbi = normalizeAbi(abi)
+            val matchedCandidate = allMatchingFiles.firstOrNull { file ->
+                val path = file.absolutePath.replace("\\", "/")
+                path.contains("/$normalizedAbi/", ignoreCase = true) ||
+                        path.contains("/$abi/", ignoreCase = true) ||
+                        path.contains("-$normalizedAbi", ignoreCase = true) ||
+                        path.contains("_$normalizedAbi", ignoreCase = true)
+            }
+
+            if (matchedCandidate != null) {
+                AppLogger.i(TAG, "Selected ABI candidate [Priority #$priorityIndex - $abi]: ${matchedCandidate.absolutePath}")
+                return matchedCandidate
+            }
+        }
+
+        // If no explicit ABI directory match, pick candidate in highest-level directory
+        return allMatchingFiles.minByOrNull { it.absolutePath.count { char -> char == '/' } } ?: allMatchingFiles.first()
+    }
+
+    private fun collectMatchingFiles(dir: File, targetName: String, result: MutableList<File>) {
+        if (!dir.exists() || !dir.isDirectory) return
+        val files = dir.listFiles() ?: return
+
         for (f in files) {
-            if (f.isFile && f.name.equals(targetName, ignoreCase = true) && f.length() > 1000L) {
-                // Reject .so, .aar, .dll, .exe
+            if (f.isDirectory) {
+                collectMatchingFiles(f, targetName, result)
+            } else if (f.isFile && f.name.equals(targetName, ignoreCase = true) && f.length() > 1000L) {
                 val lower = f.name.lowercase()
-                if (!lower.endsWith(".so") && !lower.endsWith(".aar") && !lower.endsWith(".dll") && !lower.endsWith(".exe")) {
-                    return f
+                if (!lower.endsWith(".so") && !lower.endsWith(".aar") && !lower.endsWith(".dll") && !lower.endsWith(".exe") && !lower.endsWith(".html")) {
+                    result.add(f)
                 }
             }
         }
-
-        // 2. Search subdirectories (like bin/ or x86_64/bin/)
-        for (f in files) {
-            if (f.isDirectory) {
-                val found = findExecutableInTree(f, targetName)
-                if (found != null) return found
-            }
-        }
-
-        return null
     }
 
     private fun copyFileWithPermissions(src: File, dest: File) {
@@ -352,8 +444,7 @@ object FFmpegBinaryManager {
                 input.copyTo(output)
             }
         }
-        dest.setReadable(true, false)
-        dest.setExecutable(true, false)
+        applyFullExecutablePermissions(dest)
     }
 
     private fun deleteRecursive(fileOrDir: File) {

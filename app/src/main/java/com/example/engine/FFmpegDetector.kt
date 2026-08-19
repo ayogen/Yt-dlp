@@ -181,14 +181,22 @@ object FFmpegDetector {
     }
 
     fun ensureExecutable(file: File): Boolean {
-        return try {
+        if (!file.exists()) return false
+        try {
             file.setReadable(true, false)
+            file.setWritable(true, false)
             file.setExecutable(true, false)
-            file.canExecute()
         } catch (e: Exception) {
-            AppLogger.w(TAG, "Failed setting executable permissions on ${file.name}: ${e.message}")
-            false
+            AppLogger.w(TAG, "Failed setting file permissions on ${file.name}: ${e.message}")
         }
+        try {
+            val pb = ProcessBuilder("chmod", "755", file.absolutePath)
+            val p = pb.start()
+            p.waitFor(2, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            // Ignore if restricted
+        }
+        return file.exists() && file.length() > 0 && file.canExecute()
     }
 
     /**

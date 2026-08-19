@@ -87,4 +87,28 @@ class ExampleRobolectricTest {
         assertEquals(FFmpegState.MISSING, status.state)
         assertFalse("0-byte file should be automatically purged", ffmpegFile.exists())
     }
+
+    @Test
+    fun `test ABI priority selector chooses arm64-v8a over armeabi-v7a`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val testDir = File(context.cacheDir, "abi_test_${System.currentTimeMillis()}")
+        testDir.mkdirs()
+
+        val arm64Dir = File(testDir, "arm64-v8a/bin").apply { mkdirs() }
+        val armv7Dir = File(testDir, "armeabi-v7a/bin").apply { mkdirs() }
+        val armDir = File(testDir, "armeabi/bin").apply { mkdirs() }
+
+        val arm64Ffmpeg = File(arm64Dir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
+        val armv7Ffmpeg = File(armv7Dir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
+        val armFfmpeg = File(armDir, "ffmpeg").apply { writeBytes(ByteArray(5000)) }
+
+        val deviceAbis = arrayOf("arm64-v8a", "armeabi-v7a", "armeabi")
+        val selected = FFmpegBinaryManager.findBestExecutableForDevice(testDir, "ffmpeg", deviceAbis)
+
+        assertNotNull(selected)
+        assertEquals(arm64Ffmpeg.absolutePath, selected?.absolutePath)
+
+        // Cleanup
+        testDir.deleteRecursively()
+    }
 }
