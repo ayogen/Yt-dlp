@@ -71,30 +71,32 @@ object YtDlpBinaryManager {
     fun detect(context: Context): YtDlpStatus {
         val appContext = context.applicationContext
         val primaryAbi = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown"
-        val ytdlpPkg = File(appContext.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
+        val ytdlpFile = File(appContext.noBackupFilesDir, "youtubedl-android/yt-dlp/yt-dlp")
+        val ytdlpDir = File(appContext.noBackupFilesDir, "youtubedl-android/yt-dlp")
         val pythonPkg = File(appContext.noBackupFilesDir, "youtubedl-android/packages/python")
 
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedVer = cachedVersion ?: prefs.getString(KEY_VERIFIED_VERSION, null) ?: YoutubeDL.getInstance().version(appContext)
+        val isYtDlpExtracted = ytdlpFile.exists() || ytdlpDir.exists()
 
-        return if (savedVer != null && ytdlpPkg.exists()) {
+        return if (savedVer != null && isYtDlpExtracted) {
             cachedVersion = savedVer
             YtDlpStatus(
                 state = EngineState.READY,
                 version = savedVer,
-                binaryPath = ytdlpPkg.absolutePath,
+                binaryPath = if (ytdlpFile.exists()) ytdlpFile.absolutePath else ytdlpDir.absolutePath,
                 isExecutable = true,
                 latestVersion = null,
                 isUpdateAvailable = false,
                 guidance = "yt-dlp Python runtime is active and verified ($savedVer).",
                 diagnosticDetails = "Version: $savedVer | ABI: $primaryAbi | Runtime: Android Python 3"
             )
-        } else if (ytdlpPkg.exists() && pythonPkg.exists()) {
+        } else if (isYtDlpExtracted && pythonPkg.exists()) {
             val displayVer = savedVer ?: FALLBACK_VERSION
             YtDlpStatus(
                 state = EngineState.READY,
                 version = displayVer,
-                binaryPath = ytdlpPkg.absolutePath,
+                binaryPath = if (ytdlpFile.exists()) ytdlpFile.absolutePath else ytdlpDir.absolutePath,
                 isExecutable = true,
                 latestVersion = null,
                 isUpdateAvailable = false,
@@ -126,7 +128,7 @@ object YtDlpBinaryManager {
             currentVersion = currentVersion,
             latestVersion = latest,
             isUpdateAvailable = isUpdate,
-            binaryPath = status.binaryPath ?: "${appContext.noBackupFilesDir.absolutePath}/youtubedl-android/packages/yt-dlp",
+            binaryPath = status.binaryPath ?: "${appContext.noBackupFilesDir.absolutePath}/youtubedl-android/yt-dlp/yt-dlp",
             isExecutable = status.isExecutable,
             state = status.state
         )
@@ -196,8 +198,9 @@ object YtDlpBinaryManager {
                 verifiedVersion = YoutubeDL.getInstance().version(appContext)
             }
             if (verifiedVersion.isNullOrBlank()) {
-                val ytdlpDir = File(appContext.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
-                if (ytdlpDir.exists()) {
+                val ytdlpDir = File(appContext.noBackupFilesDir, "youtubedl-android/yt-dlp")
+                val ytdlpFile = File(appContext.noBackupFilesDir, "youtubedl-android/yt-dlp/yt-dlp")
+                if (ytdlpDir.exists() || ytdlpFile.exists()) {
                     verifiedVersion = FALLBACK_VERSION
                 }
             }
