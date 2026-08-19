@@ -69,12 +69,13 @@ object YtDlpBinaryManager {
     }
 
     fun detect(context: Context): YtDlpStatus {
+        val appContext = context.applicationContext
         val primaryAbi = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown"
-        val ytdlpPkg = File(context.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
-        val pythonPkg = File(context.noBackupFilesDir, "youtubedl-android/packages/python")
+        val ytdlpPkg = File(appContext.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
+        val pythonPkg = File(appContext.noBackupFilesDir, "youtubedl-android/packages/python")
 
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedVer = cachedVersion ?: prefs.getString(KEY_VERIFIED_VERSION, null) ?: YoutubeDL.getInstance().version(context)
+        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedVer = cachedVersion ?: prefs.getString(KEY_VERIFIED_VERSION, null) ?: YoutubeDL.getInstance().version(appContext)
 
         return if (savedVer != null && ytdlpPkg.exists()) {
             cachedVersion = savedVer
@@ -115,7 +116,8 @@ object YtDlpBinaryManager {
     }
 
     suspend fun getVersionInfo(context: Context): YtDlpVersionInfo = withContext(Dispatchers.IO) {
-        val status = detect(context)
+        val appContext = context.applicationContext
+        val status = detect(appContext)
         val currentVersion = status.version ?: FALLBACK_VERSION
         val latest = fetchLatestReleaseTag() ?: currentVersion
         val isUpdate = status.state == EngineState.READY && latest != currentVersion && latest.isNotBlank()
@@ -124,7 +126,7 @@ object YtDlpBinaryManager {
             currentVersion = currentVersion,
             latestVersion = latest,
             isUpdateAvailable = isUpdate,
-            binaryPath = status.binaryPath ?: "${context.noBackupFilesDir.absolutePath}/youtubedl-android/packages/yt-dlp",
+            binaryPath = status.binaryPath ?: "${appContext.noBackupFilesDir.absolutePath}/youtubedl-android/packages/yt-dlp",
             isExecutable = status.isExecutable,
             state = status.state
         )
@@ -157,15 +159,16 @@ object YtDlpBinaryManager {
         context: Context,
         onProgress: (Float) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
         try {
             AppLogger.i(TAG, "Initializing Android Python runtime for yt-dlp...")
             onProgress(15f)
 
             // Step 1: Initialize YoutubeDL native runtime & Python stdlib
             try {
-                YoutubeDL.getInstance().init(context)
+                YoutubeDL.getInstance().init(appContext)
             } catch (e: Exception) {
-                AppLogger.d(TAG, "YoutubeDL.init result: ${e.message}")
+                AppLogger.d(TAG, "YoutubeDL.init notice: ${e.message}")
             }
             onProgress(50f)
 
@@ -190,11 +193,10 @@ object YtDlpBinaryManager {
 
             // Step 3: Check fallback version sources
             if (verifiedVersion.isNullOrBlank()) {
-                verifiedVersion = YoutubeDL.getInstance().version(context)
+                verifiedVersion = YoutubeDL.getInstance().version(appContext)
             }
             if (verifiedVersion.isNullOrBlank()) {
-                // If package files are verified on disk, use fallback release version
-                val ytdlpDir = File(context.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
+                val ytdlpDir = File(appContext.noBackupFilesDir, "youtubedl-android/packages/yt-dlp")
                 if (ytdlpDir.exists()) {
                     verifiedVersion = FALLBACK_VERSION
                 }
@@ -202,7 +204,7 @@ object YtDlpBinaryManager {
 
             if (!verifiedVersion.isNullOrBlank()) {
                 cachedVersion = verifiedVersion
-                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_VERIFIED_VERSION, verifiedVersion)
                     .apply()

@@ -37,6 +37,7 @@ object FFmpegBinaryManager {
         context: Context,
         onProgress: (Float) -> Unit = {}
     ): Result<FFmpegStatus> = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
         val supportedAbis = Build.SUPPORTED_ABIS
         val primaryAbi = if (supportedAbis.isNotEmpty()) supportedAbis[0] else "arm64-v8a"
         AppLogger.i(TAG, "Starting native FFmpeg initialization for ABI: $primaryAbi (Supported: ${supportedAbis.joinToString(", ")})")
@@ -44,13 +45,13 @@ object FFmpegBinaryManager {
 
         try {
             // Step 1: Initialize native FFmpeg binaries in app's execution environment
-            FFmpeg.getInstance().init(context)
+            FFmpeg.getInstance().init(appContext)
             onProgress(80f)
 
             isInitialized = true
             onProgress(100f)
 
-            val status = FFmpegDetector.detect(context)
+            val status = FFmpegDetector.detect(appContext)
             AppLogger.i(TAG, "Native FFmpeg initialized and verified successfully: ${status.version ?: "Active"}")
             Result.success(status)
         } catch (e: Exception) {
