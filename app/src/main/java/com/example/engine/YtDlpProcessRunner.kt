@@ -153,6 +153,10 @@ object YtDlpProcessRunner {
             AppLogger.i("YtDlpProcessRunner", "Starting yt-dlp download for $url", taskId)
 
             var downloadedFile: String = outputTemplate
+            var lastSpeed = 0.0
+            var lastDownloaded = 0L
+            var lastTotal = 0L
+            var lastEta = 0L
 
             val response = YoutubeDL.getInstance().execute(request, taskId) { progress, etaInSeconds, line ->
                 if (isCancelled()) {
@@ -169,7 +173,27 @@ object YtDlpProcessRunner {
                     if (audioDest.isNotBlank()) downloadedFile = audioDest
                 }
 
-                onProgress(progress, 0L, 0L, 0.0, etaInSeconds)
+                val parsedSpeed = YtDlpOutputParser.parseSpeed(line)
+                if (parsedSpeed > 0.0) {
+                    lastSpeed = parsedSpeed
+                }
+
+                val (dBytes, tBytes) = YtDlpOutputParser.parseSize(line, progress)
+                if (tBytes > 0L) {
+                    lastTotal = tBytes
+                }
+                if (dBytes > 0L) {
+                    lastDownloaded = dBytes
+                } else if (progress > 0f && lastTotal > 0L) {
+                    lastDownloaded = ((progress / 100.0) * lastTotal).toLong()
+                }
+
+                val parsedEta = if (etaInSeconds > 0) etaInSeconds else YtDlpOutputParser.parseEta(line)
+                if (parsedEta > 0) {
+                    lastEta = parsedEta
+                }
+
+                onProgress(progress, lastDownloaded, lastTotal, lastSpeed, lastEta)
             }
 
             // Check if downloaded file exists
@@ -198,36 +222,42 @@ object YtDlpProcessRunner {
         }
     }
 
+    private fun cleanString(json: JSONObject, key: String, fallback: String = ""): String {
+        if (json.isNull(key) || !json.has(key)) return fallback
+        val v = json.optString(key, fallback).trim()
+        return if (v.isEmpty() || v == "null") fallback else v
+    }
+
     private fun parseYtDlpJson(json: JSONObject, originalUrl: String): MediaMetadata {
-        val id = json.optString("id", Math.abs(originalUrl.hashCode()).toString())
-        val title = json.optString("title", "Untitled Media")
-        val uploader = json.optString("uploader", json.optString("channel", "Unknown Uploader"))
+        val id = cleanString(json, "id", Math.abs(originalUrl.hashCode()).toString())
+        val title = cleanString(json, "title", "Untitled Media")
+        val uploader = cleanString(json, "uploader", cleanString(json, "channel", "Unknown Uploader"))
         val duration = json.optLong("duration", 0L)
         val viewCount = if (json.has("view_count") && !json.isNull("view_count")) json.optLong("view_count") else null
         val likeCount = if (json.has("like_count") && !json.isNull("like_count")) json.optLong("like_count") else null
-        val uploadDate = json.optString("upload_date", "")
-        val description = json.optString("description", "")
-        val thumbnail = json.optString("thumbnail", "")
+        val uploadDate = cleanString(json, "upload_date", "")
+        val description = cleanString(json, "description", "")
+        val thumbnail = cleanString(json, "thumbnail", "")
 
         val formatsList = mutableListOf<FormatInfo>()
         val formatsArray = json.optJSONArray("formats")
         if (formatsArray != null) {
             for (i in 0 until formatsArray.length()) {
                 val f = formatsArray.optJSONObject(i) ?: continue
-                val formatId = f.optString("format_id", "$i")
-                val ext = f.optString("ext", "mp4")
+                val formatId = cleanString(f, "format_id", "$i")
+                val ext = cleanString(f, "ext", "mp4")
                 val width = if (f.has("width") && !f.isNull("width")) f.optInt("width") else null
                 val height = if (f.has("height") && !f.isNull("height")) f.optInt("height") else null
                 val fps = if (f.has("fps") && !f.isNull("fps")) f.optDouble("fps") else null
-                val vcodec = f.optString("vcodec", "none")
-                val acodec = f.optString("acodec", "none")
+                val vcodec = cleanString(f, "vcodec", "none")
+                val acodec = cleanString(f, "acodec", "none")
                 val tbr = if (f.has("tbr") && !f.isNull("tbr")) f.optDouble("tbr") else null
                 val vbr = if (f.has("vbr") && !f.isNull("vbr")) f.optDouble("vbr") else null
                 val abr = if (f.has("abr") && !f.isNull("abr")) f.optDouble("abr") else null
                 val filesize = if (f.has("filesize") && !f.isNull("filesize") && f.optLong("filesize") > 0) f.optLong("filesize") else null
                 val filesizeApprox = if (f.has("filesize_approx") && !f.isNull("filesize_approx") && f.optLong("filesize_approx") > 0) f.optLong("filesize_approx") else null
-                val formatNote = f.optString("format_note", "")
-                val resolution = f.optString("resolution", if (height != null && height > 0) "${height}p" else "")
+                val formatNote = cleanString(f, "format_note", "")
+                val resolution = cleanString(f, "resolution", if (height != null && height > 0) "${height}p" else "")
 
                 formatsList.add(
                     FormatInfo(
@@ -245,7 +275,7 @@ object YtDlpProcessRunner {
                         filesize = filesize,
                         filesizeApprox = filesizeApprox,
                         formatNote = formatNote,
-                        url = f.optString("url", "")
+                        url = cleanString(f, "url", "")
                     )
                 )
             }
@@ -280,7 +310,77 @@ object YtDlpProcessRunner {
             thumbnail = thumbnail,
             formats = formatsList,
             subtitles = subtitlesList,
-            extractorName = json.optString("extractor", "yt-dlp")
+            extractorName = cleanString(json, "extractor", "yt-dlp")
         )
+    }
+}
+
+object YtDlpOutputParser {
+    private val speedRegex = """(?:at|@)\s+~?([0-9.]+)\s*([KMGTkmgt]i?B)/s""".toRegex()
+    private val sizeRegex = """([0-9.]+)\s*([KMGTkmgt]i?B)\s+of\s+~?([0-9.]+)\s*([KMGTkmgt]i?B)""".toRegex()
+    private val totalSizeRegex = """of\s+~?([0-9.]+)\s*([KMGTkmgt]i?B)""".toRegex()
+    private val etaRegex = """ETA\s+(\d{1,2}:\d{2}(?::\d{2})?)""".toRegex()
+
+    fun parseSpeed(line: String): Double {
+        val match = speedRegex.find(line) ?: return 0.0
+        val value = match.groupValues[1].toDoubleOrNull() ?: return 0.0
+        val unit = match.groupValues[2].uppercase()
+        val multiplier = when {
+            unit.startsWith("G") -> 1024.0 * 1024.0 * 1024.0
+            unit.startsWith("M") -> 1024.0 * 1024.0
+            unit.startsWith("K") -> 1024.0
+            else -> 1.0
+        }
+        return value * multiplier
+    }
+
+    fun parseSize(line: String, currentProgress: Float): Pair<Long, Long> {
+        val match = sizeRegex.find(line)
+        if (match != null) {
+            val downloadedVal = match.groupValues[1].toDoubleOrNull() ?: 0.0
+            val downloadedUnit = match.groupValues[2].uppercase()
+            val totalVal = match.groupValues[3].toDoubleOrNull() ?: 0.0
+            val totalUnit = match.groupValues[4].uppercase()
+
+            val downloadedBytes = toBytes(downloadedVal, downloadedUnit)
+            val totalBytes = toBytes(totalVal, totalUnit)
+            return Pair(downloadedBytes, totalBytes)
+        }
+
+        val totalMatch = totalSizeRegex.find(line)
+        if (totalMatch != null) {
+            val totalVal = totalMatch.groupValues[1].toDoubleOrNull() ?: 0.0
+            val totalUnit = totalMatch.groupValues[2].uppercase()
+            val totalBytes = toBytes(totalVal, totalUnit)
+            val downloadedBytes = if (currentProgress > 0f) {
+                ((currentProgress / 100.0) * totalBytes).toLong()
+            } else {
+                0L
+            }
+            return Pair(downloadedBytes, totalBytes)
+        }
+
+        return Pair(0L, 0L)
+    }
+
+    fun parseEta(line: String): Long {
+        val match = etaRegex.find(line) ?: return 0L
+        val parts = match.groupValues[1].split(":").mapNotNull { it.toLongOrNull() }
+        return when (parts.size) {
+            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+            2 -> parts[0] * 60 + parts[1]
+            1 -> parts[0]
+            else -> 0L
+        }
+    }
+
+    private fun toBytes(value: Double, unit: String): Long {
+        val multiplier = when {
+            unit.startsWith("G") -> 1024.0 * 1024.0 * 1024.0
+            unit.startsWith("M") -> 1024.0 * 1024.0
+            unit.startsWith("K") -> 1024.0
+            else -> 1.0
+        }
+        return (value * multiplier).toLong()
     }
 }

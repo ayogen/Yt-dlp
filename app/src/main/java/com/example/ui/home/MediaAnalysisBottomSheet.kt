@@ -105,8 +105,16 @@ fun MediaAnalysisBottomSheet(
         mutableStateOf(if (metadata.isPlaylist) MediaType.PLAYLIST else MediaType.VIDEO)
     }
 
-    var selectedFormat by remember {
-        mutableStateOf(metadata.formats.firstOrNull { it.height != null && it.height <= 1080 } ?: metadata.formats.firstOrNull())
+    val deduplicatedVideoFormats = remember(metadata.formats) {
+        deduplicateVideoFormats(metadata.formats)
+    }
+
+    var selectedFormat by remember(metadata) {
+        mutableStateOf(
+            deduplicatedVideoFormats.firstOrNull { it.height != null && it.height <= 1080 }
+                ?: deduplicatedVideoFormats.firstOrNull()
+                ?: metadata.formats.firstOrNull()
+        )
     }
 
     var selectedContainer by remember { mutableStateOf(OutputContainer.MP4) }
@@ -348,7 +356,19 @@ fun MediaAnalysisBottomSheet(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        metadata.formats.filter { !it.isAudioOnly }.forEach { format ->
+                        val videoFormatsToDisplay = if (deduplicatedVideoFormats.isNotEmpty()) {
+                            deduplicatedVideoFormats
+                        } else {
+                            listOf(
+                                FormatInfo(
+                                    formatId = "best",
+                                    ext = "mp4",
+                                    resolution = "Best Quality"
+                                )
+                            )
+                        }
+
+                        videoFormatsToDisplay.forEach { format ->
                             val isSelected = selectedFormat?.formatId == format.formatId
                             FilterChip(
                                 selected = isSelected,
@@ -357,7 +377,7 @@ fun MediaAnalysisBottomSheet(
                                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
                                         Text(text = format.displayResolution, fontWeight = FontWeight.Bold)
                                         Text(
-                                            text = "${format.displayFileSize} • ${if (format.fps != null) "${format.fps.toInt()}fps" else format.ext.uppercase()}",
+                                            text = "${format.displayFileSize} • ${if (format.fps != null && format.fps > 0) "${format.fps.toInt()}fps" else format.ext.uppercase()}",
                                             fontSize = 10.sp,
                                             color = if (isSelected) ElegantLavenderOnPrimary else ElegantTextSecondary
                                         )
@@ -627,4 +647,33 @@ fun MediaAnalysisBottomSheet(
             }
         }
     }
+}
+
+fun deduplicateVideoFormats(formats: List<FormatInfo>): List<FormatInfo> {
+    val videoFormats = formats.filter { !it.isAudioOnly }
+    if (videoFormats.isEmpty()) return emptyList()
+
+    val grouped = videoFormats.groupBy { format ->
+        when {
+            format.height != null && format.height > 0 -> "${format.height}p"
+            format.displayResolution.isNotBlank() && format.displayResolution != "null" && format.displayResolution != "Audio Only" -> format.displayResolution
+            else -> "Default"
+        }
+    }
+
+    val bestPerResolution = grouped.map { (_, list) ->
+        list.maxWithOrNull(
+            compareBy<FormatInfo> { it.height ?: 0 }
+                .thenBy { it.fps ?: 30.0 }
+                .thenBy { it.tbr ?: it.vbr ?: 0.0 }
+                .thenBy { it.filesize ?: it.filesizeApprox ?: 0L }
+                .thenBy { if (it.ext.lowercase() == "mp4") 1 else 0 }
+        ) ?: list.first()
+    }
+
+    return bestPerResolution.sortedWith(
+        compareByDescending<FormatInfo> { it.height ?: 0 }
+            .thenByDescending { it.fps ?: 0.0 }
+            .thenByDescending { it.tbr ?: it.vbr ?: 0.0 }
+    )
 }

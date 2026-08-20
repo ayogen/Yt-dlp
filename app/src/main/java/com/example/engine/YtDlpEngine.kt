@@ -20,13 +20,14 @@ data class EngineDiagnosticError(
 class YtDlpEngine(private val context: Context) {
 
     suspend fun analyzeUrl(url: String, settings: AppSettings): Result<MediaMetadata> = withContext(Dispatchers.IO) {
-        AppLogger.i("YtDlpEngine", "Starting URL analysis for: $url")
+        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
+        AppLogger.i("YtDlpEngine", "Starting URL analysis for: $resolvedUrl (original: $url)")
 
         // Try yt-dlp first if runtime is ready
         if (YtDlpBinaryManager.isReady(context)) {
             val cliResult = YtDlpProcessRunner.extractMetadataCli(
                 binaryPath = "",
-                url = url,
+                url = resolvedUrl,
                 cookiesPath = settings.cookiesFilePath.ifBlank { null },
                 customArgs = settings.customYtDlpArgs
             )
@@ -39,7 +40,7 @@ class YtDlpEngine(private val context: Context) {
         }
 
         // Fallback: Use embedded extractor engine
-        EmbeddedExtractorEngine.analyzeUrl(url)
+        EmbeddedExtractorEngine.analyzeUrl(resolvedUrl)
     }
 
     suspend fun executeDownload(
@@ -239,18 +240,20 @@ class YtDlpEngine(private val context: Context) {
             "bestaudio/best"
         } else {
             when (task.formatId) {
-                "2160p" -> "bestvideo[height<=2160]+bestaudio/best[height<=2160]"
-                "1440p" -> "bestvideo[height<=1440]+bestaudio/best[height<=1440]"
-                "1080p" -> "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
-                "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]"
-                "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]"
-                "360p" -> "bestvideo[height<=360]+bestaudio/best[height<=360]"
+                "2160p" -> "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
+                "1440p" -> "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
+                "1080p" -> "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+                "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+                "360p" -> "bestvideo[height<=360]+bestaudio/best[height<=360]/best"
                 "best" -> "bestvideo+bestaudio/best"
                 else -> {
-                    if (task.formatId.isNotBlank() && task.formatId.all { it.isDigit() }) {
-                        "${task.formatId}+bestaudio/best"
-                    } else if (task.formatId.isNotBlank()) {
-                        task.formatId
+                    if (task.formatId.isNotBlank()) {
+                        if (task.formatId.contains("+") || task.formatId.contains("/")) {
+                            task.formatId
+                        } else {
+                            "${task.formatId}+bestaudio/${task.formatId}/best"
+                        }
                     } else {
                         "bestvideo+bestaudio/best"
                     }

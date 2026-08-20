@@ -35,6 +35,7 @@ class DownloadManager(
     private val pausedFlags = ConcurrentHashMap<String, Boolean>()
     private val cancelledFlags = ConcurrentHashMap<String, Boolean>()
     private val activeDownloadCount = AtomicInteger(0)
+    private val lastProgressUpdate = ConcurrentHashMap<String, Long>()
 
     private val _settingsFlow = MutableStateFlow(AppSettings())
     val settingsFlow: StateFlow<AppSettings> = _settingsFlow.asStateFlow()
@@ -122,30 +123,35 @@ class DownloadManager(
                     task = task,
                     settings = _settingsFlow.value,
                     onProgress = { progress, downloaded, total, speed, eta ->
-                        scope.launch {
-                            val isPaused = pausedFlags[task.id] == true
-                            val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
-                            downloadDao.updateTaskProgress(
-                                id = task.id,
-                                progress = progress,
-                                downloadedBytes = downloaded,
-                                totalBytes = total,
-                                speed = if (isPaused) 0.0 else speed,
-                                eta = if (isPaused) 0L else eta,
-                                status = currentStatus
-                            )
+                        val now = System.currentTimeMillis()
+                        val lastTime = lastProgressUpdate[task.id] ?: 0L
+                        if (now - lastTime >= 250L || progress >= 100f || isPaused()) {
+                            lastProgressUpdate[task.id] = now
+                            scope.launch {
+                                val isPaused = pausedFlags[task.id] == true
+                                val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
+                                downloadDao.updateTaskProgress(
+                                    id = task.id,
+                                    progress = progress,
+                                    downloadedBytes = downloaded,
+                                    totalBytes = total,
+                                    speed = if (isPaused) 0.0 else speed,
+                                    eta = if (isPaused) 0L else eta,
+                                    status = currentStatus
+                                )
 
-                            // Update Foreground Notification
-                            DownloadForegroundService.updateProgress(
-                                context = context,
-                                taskId = task.id,
-                                title = task.title,
-                                progress = progress,
-                                downloaded = downloaded,
-                                total = total,
-                                speed = if (isPaused) 0.0 else speed,
-                                activeCount = activeDownloadCount.get()
-                            )
+                                // Update Foreground Notification
+                                DownloadForegroundService.updateProgress(
+                                    context = context,
+                                    taskId = task.id,
+                                    title = task.title,
+                                    progress = progress,
+                                    downloaded = downloaded,
+                                    total = total,
+                                    speed = if (isPaused) 0.0 else speed,
+                                    activeCount = activeDownloadCount.get()
+                                )
+                            }
                         }
                     },
                     isCancelled = { cancelledFlags[task.id] == true },
