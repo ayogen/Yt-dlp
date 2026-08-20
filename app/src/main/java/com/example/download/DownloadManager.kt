@@ -125,10 +125,10 @@ class DownloadManager(
                     onProgress = { progress, downloaded, total, speed, eta ->
                         val now = System.currentTimeMillis()
                         val lastTime = lastProgressUpdate[task.id] ?: 0L
-                        if (now - lastTime >= 250L || progress >= 100f || isPaused()) {
+                        val isPaused = pausedFlags[task.id] == true
+                        if (now - lastTime >= 250L || progress >= 100f || isPaused) {
                             lastProgressUpdate[task.id] = now
                             scope.launch {
-                                val isPaused = pausedFlags[task.id] == true
                                 val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
                                 downloadDao.updateTaskProgress(
                                     id = task.id,
