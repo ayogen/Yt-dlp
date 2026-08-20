@@ -23,6 +23,9 @@ class YtDlpEngine(private val context: Context) {
         val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
         AppLogger.i("YtDlpEngine", "Starting URL analysis for: $resolvedUrl (original: $url)")
 
+        // Ensure yt-dlp runtime is initialized
+        YtDlpBinaryManager.ensureInitialized(context)
+
         // Try yt-dlp first if runtime is ready
         if (YtDlpBinaryManager.isReady(context)) {
             val cliResult = YtDlpProcessRunner.extractMetadataCli(
@@ -69,6 +72,10 @@ class YtDlpEngine(private val context: Context) {
     ): Result<String> = withContext(Dispatchers.IO) {
         val taskId = task.id
         AppLogger.i("YtDlpEngine", "Executing download for task: ${task.title} ($taskId)", taskId)
+
+        // Ensure runtimes are initialized
+        YtDlpBinaryManager.ensureInitialized(context)
+        FFmpegBinaryManager.ensureInitialized(context)
 
         val isYtDlpReady = YtDlpBinaryManager.isReady(context)
         val ffmpegStatus = FFmpegDetector.detect(context)

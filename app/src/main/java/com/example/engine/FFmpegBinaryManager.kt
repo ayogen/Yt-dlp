@@ -27,7 +27,38 @@ object FFmpegBinaryManager {
     }
 
     fun isReady(context: Context): Boolean {
-        return FFmpegDetector.detect(context).isAvailable
+        return isInitialized || FFmpegDetector.detect(context).isAvailable
+    }
+
+    suspend fun ensureInitialized(context: Context): Result<FFmpegStatus> = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        try {
+            if (!isInitialized) {
+                AppLogger.i(TAG, "Initializing FFmpeg native binaries...")
+                FFmpeg.getInstance().init(appContext)
+                isInitialized = true
+            }
+            val status = FFmpegDetector.detect(appContext)
+            AppLogger.i(TAG, "FFmpeg runtime ready: ${status.version ?: "Active"}")
+            Result.success(status)
+        } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
+            AppLogger.e(TAG, "FFmpeg init failed: $msg")
+            Result.failure(e)
+        }
+    }
+
+    fun init(context: Context) {
+        val appContext = context.applicationContext
+        try {
+            if (!isInitialized) {
+                FFmpeg.getInstance().init(appContext)
+                isInitialized = true
+                AppLogger.i(TAG, "FFmpeg synchronous init succeeded")
+            }
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "FFmpeg synchronous init exception: ${e.message}")
+        }
     }
 
     /**
@@ -46,18 +77,18 @@ object FFmpegBinaryManager {
         try {
             // Step 1: Initialize native FFmpeg binaries in app's execution environment
             FFmpeg.getInstance().init(appContext)
+            isInitialized = true
             onProgress(80f)
 
-            isInitialized = true
+            val status = FFmpegDetector.detect(appContext)
             onProgress(100f)
 
-            val status = FFmpegDetector.detect(appContext)
             AppLogger.i(TAG, "Native FFmpeg initialized and verified successfully: ${status.version ?: "Active"}")
             Result.success(status)
         } catch (e: Exception) {
             val msg = e.message ?: e.javaClass.simpleName
             AppLogger.e(TAG, "FFmpeg native initialization failed: $msg")
-            Result.failure(Exception("FFmpeg native initialization failed: $msg"))
+            Result.failure(Exception("FFmpeg native initialization failed: $msg", e))
         }
     }
 }

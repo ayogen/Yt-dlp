@@ -11,7 +11,13 @@ import com.example.data.db.AppDatabase
 import com.example.download.DownloadManager
 import com.example.download.DownloadRepository
 import com.example.engine.AppLogger
+import com.example.engine.FFmpegBinaryManager
+import com.example.engine.YtDlpBinaryManager
 import com.example.engine.YtDlpEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class YtDlpApplication : Application(), ImageLoaderFactory {
     lateinit var database: AppDatabase
@@ -33,6 +39,18 @@ class YtDlpApplication : Application(), ImageLoaderFactory {
         engine = YtDlpEngine(this)
         downloadManager = DownloadManager(this, database, engine)
         repository = DownloadRepository(database, engine, downloadManager, this)
+
+        // Automatically initialize yt-dlp Python runtime and FFmpeg native binaries on startup
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            try {
+                AppLogger.i("YtDlpApplication", "Triggering startup media engine initialization...")
+                YtDlpBinaryManager.ensureInitialized(this@YtDlpApplication)
+                FFmpegBinaryManager.ensureInitialized(this@YtDlpApplication)
+                AppLogger.i("YtDlpApplication", "Startup media engine initialization complete")
+            } catch (e: Exception) {
+                AppLogger.w("YtDlpApplication", "Startup media engine initialization warning: ${e.message}")
+            }
+        }
     }
 
     override fun newImageLoader(): ImageLoader {

@@ -1,6 +1,7 @@
 package com.example.download
 
 import android.content.Context
+import com.example.data.SettingsPreferencesManager
 import com.example.data.db.AppDatabase
 import com.example.data.model.AppSettings
 import com.example.data.model.DownloadHistoryEntity
@@ -37,7 +38,8 @@ class DownloadManager(
     private val activeDownloadCount = AtomicInteger(0)
     private val lastProgressUpdate = ConcurrentHashMap<String, Long>()
 
-    private val _settingsFlow = MutableStateFlow(AppSettings())
+    private val settingsPreferencesManager = SettingsPreferencesManager(context)
+    private val _settingsFlow = MutableStateFlow(settingsPreferencesManager.loadSettings())
     val settingsFlow: StateFlow<AppSettings> = _settingsFlow.asStateFlow()
 
     private var queueLoopJob: Job? = null
@@ -48,7 +50,8 @@ class DownloadManager(
 
     fun updateSettings(newSettings: AppSettings) {
         _settingsFlow.value = newSettings
-        AppLogger.i("DownloadManager", "Settings updated. Max concurrency: ${newSettings.maxConcurrentDownloads}")
+        settingsPreferencesManager.saveSettings(newSettings)
+        AppLogger.i("DownloadManager", "Settings updated and saved to disk. Max concurrency: ${newSettings.maxConcurrentDownloads}")
     }
 
     fun startQueueProcessor() {
