@@ -13,9 +13,6 @@ object UrlNormalizer {
         .followSslRedirects(true)
         .build()
 
-    private val FB_SHARE_REEL = Pattern.compile("https?://(?:www\\.|m\\.|web\\.)?facebook\\.com/share/r/([0-9a-zA-Z_-]+)", Pattern.CASE_INSENSITIVE)
-    private val FB_SHARE_VIDEO = Pattern.compile("https?://(?:www\\.|m\\.|web\\.)?facebook\\.com/share/v/([0-9a-zA-Z_-]+)", Pattern.CASE_INSENSITIVE)
-    private val FB_SHARE_POST = Pattern.compile("https?://(?:www\\.|m\\.|web\\.)?facebook\\.com/share/p/([0-9a-zA-Z_-]+)", Pattern.CASE_INSENSITIVE)
     private val INSTA_SHARE_REEL = Pattern.compile("https?://(?:www\\.)?instagram\\.com/share/reel/([0-9a-zA-Z_-]+)", Pattern.CASE_INSENSITIVE)
     private val INSTA_SHARE_POST = Pattern.compile("https?://(?:www\\.)?instagram\\.com/share/p/([0-9a-zA-Z_-]+)", Pattern.CASE_INSENSITIVE)
 
@@ -35,31 +32,7 @@ object UrlNormalizer {
             trimmed
         }
 
-        // 1. Check direct pattern rewrites for Facebook / Instagram share links
-        val fbReelMatcher = FB_SHARE_REEL.matcher(normalized)
-        if (fbReelMatcher.find()) {
-            val id = fbReelMatcher.group(1)
-            val rewritten = "https://www.facebook.com/reel/$id"
-            AppLogger.i("UrlNormalizer", "Rewrote Facebook share reel URL to canonical: $rewritten")
-            return rewritten
-        }
-
-        val fbVideoMatcher = FB_SHARE_VIDEO.matcher(normalized)
-        if (fbVideoMatcher.find()) {
-            val id = fbVideoMatcher.group(1)
-            val rewritten = "https://www.facebook.com/watch/?v=$id"
-            AppLogger.i("UrlNormalizer", "Rewrote Facebook share video URL to canonical: $rewritten")
-            return rewritten
-        }
-
-        val fbPostMatcher = FB_SHARE_POST.matcher(normalized)
-        if (fbPostMatcher.find()) {
-            val id = fbPostMatcher.group(1)
-            val rewritten = "https://www.facebook.com/posts/$id"
-            AppLogger.i("UrlNormalizer", "Rewrote Facebook share post URL to canonical: $rewritten")
-            return rewritten
-        }
-
+        // 1. Instagram share links (which use standard alphanumeric media shortcodes)
         val instaReelMatcher = INSTA_SHARE_REEL.matcher(normalized)
         if (instaReelMatcher.find()) {
             val id = instaReelMatcher.group(1)
@@ -76,18 +49,19 @@ object UrlNormalizer {
             return rewritten
         }
 
-        // 2. If it's a known shortener or redirect domain (fb.watch, vm.tiktok.com, vt.tiktok.com, youtu.be, bit.ly, etc.)
+        // 2. Facebook share URLs or redirect domains: follow the HTTP redirect chain to get the real canonical URL
         val lower = normalized.lowercase()
-        val isShortener = lower.contains("fb.watch/") ||
+        val isRedirectLink = lower.contains("fb.watch/") ||
+                lower.contains("facebook.com/share/") ||
+                lower.contains("m.facebook.com/share/") ||
                 lower.contains("vm.tiktok.com/") ||
                 lower.contains("vt.tiktok.com/") ||
                 lower.contains("youtu.be/") ||
                 lower.contains("tinyurl.com/") ||
                 lower.contains("bit.ly/") ||
-                lower.contains("t.co/") ||
-                lower.contains("/share/")
+                lower.contains("t.co/")
 
-        if (isShortener) {
+        if (isRedirectLink) {
             val resolved = followRedirects(normalized)
             if (resolved != null && resolved != normalized) {
                 AppLogger.i("UrlNormalizer", "Resolved redirect: $normalized -> $resolved")

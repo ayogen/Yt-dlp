@@ -35,11 +35,28 @@ class YtDlpEngine(private val context: Context) {
                 AppLogger.i("YtDlpEngine", "Metadata extracted via yt-dlp engine")
                 return@withContext cliResult
             } else {
-                AppLogger.w("YtDlpEngine", "yt-dlp extraction error, falling back to embedded extractor: ${cliResult.exceptionOrNull()?.message}")
+                val errorMsg = cliResult.exceptionOrNull()?.message ?: "Unknown extraction error"
+                AppLogger.w("YtDlpEngine", "yt-dlp extraction error: $errorMsg")
+                
+                // Only fall back to embedded extractor if URL is a direct media stream or generic web page,
+                // and NOT a major platform URL where yt-dlp is required.
+                val lower = resolvedUrl.lowercase()
+                val isMajorPlatform = lower.contains("facebook.com") ||
+                        lower.contains("fb.watch") ||
+                        lower.contains("instagram.com") ||
+                        lower.contains("tiktok.com") ||
+                        lower.contains("youtube.com") ||
+                        lower.contains("youtu.be") ||
+                        lower.contains("twitter.com") ||
+                        lower.contains("x.com")
+
+                if (isMajorPlatform) {
+                    return@withContext cliResult
+                }
             }
         }
 
-        // Fallback: Use embedded extractor engine
+        // Fallback: Use embedded extractor engine for direct media streams and generic websites
         EmbeddedExtractorEngine.analyzeUrl(resolvedUrl)
     }
 
