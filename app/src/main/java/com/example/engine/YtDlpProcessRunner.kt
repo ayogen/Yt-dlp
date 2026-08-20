@@ -228,13 +228,55 @@ object YtDlpProcessRunner {
         return if (v.isEmpty() || v == "null") fallback else v
     }
 
+    private fun cleanLong(json: JSONObject, key: String): Long? {
+        if (!json.has(key) || json.isNull(key)) return null
+        return when (val v = json.opt(key)) {
+            is Number -> {
+                val l = v.toLong()
+                if (l > 0) l else null
+            }
+            is String -> {
+                v.trim().toDoubleOrNull()?.toLong()?.takeIf { it > 0 }
+            }
+            else -> null
+        }
+    }
+
+    private fun cleanDouble(json: JSONObject, key: String): Double? {
+        if (!json.has(key) || json.isNull(key)) return null
+        return when (val v = json.opt(key)) {
+            is Number -> {
+                val d = v.toDouble()
+                if (d > 0.0) d else null
+            }
+            is String -> {
+                v.trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+            }
+            else -> null
+        }
+    }
+
+    private fun cleanInt(json: JSONObject, key: String): Int? {
+        if (!json.has(key) || json.isNull(key)) return null
+        return when (val v = json.opt(key)) {
+            is Number -> {
+                val i = v.toInt()
+                if (i > 0) i else null
+            }
+            is String -> {
+                v.trim().toDoubleOrNull()?.toInt()?.takeIf { it > 0 }
+            }
+            else -> null
+        }
+    }
+
     private fun parseYtDlpJson(json: JSONObject, originalUrl: String): MediaMetadata {
         val id = cleanString(json, "id", Math.abs(originalUrl.hashCode()).toString())
         val title = cleanString(json, "title", "Untitled Media")
         val uploader = cleanString(json, "uploader", cleanString(json, "channel", "Unknown Uploader"))
-        val duration = json.optLong("duration", 0L)
-        val viewCount = if (json.has("view_count") && !json.isNull("view_count")) json.optLong("view_count") else null
-        val likeCount = if (json.has("like_count") && !json.isNull("like_count")) json.optLong("like_count") else null
+        val duration = cleanLong(json, "duration") ?: 0L
+        val viewCount = cleanLong(json, "view_count")
+        val likeCount = cleanLong(json, "like_count")
         val uploadDate = cleanString(json, "upload_date", "")
         val description = cleanString(json, "description", "")
         val thumbnail = cleanString(json, "thumbnail", "")
@@ -246,16 +288,16 @@ object YtDlpProcessRunner {
                 val f = formatsArray.optJSONObject(i) ?: continue
                 val formatId = cleanString(f, "format_id", "$i")
                 val ext = cleanString(f, "ext", "mp4")
-                val width = if (f.has("width") && !f.isNull("width")) f.optInt("width") else null
-                val height = if (f.has("height") && !f.isNull("height")) f.optInt("height") else null
-                val fps = if (f.has("fps") && !f.isNull("fps")) f.optDouble("fps") else null
+                val width = cleanInt(f, "width")
+                val height = cleanInt(f, "height")
+                val fps = cleanDouble(f, "fps")
                 val vcodec = cleanString(f, "vcodec", "none")
                 val acodec = cleanString(f, "acodec", "none")
-                val tbr = if (f.has("tbr") && !f.isNull("tbr")) f.optDouble("tbr") else null
-                val vbr = if (f.has("vbr") && !f.isNull("vbr")) f.optDouble("vbr") else null
-                val abr = if (f.has("abr") && !f.isNull("abr")) f.optDouble("abr") else null
-                val filesize = if (f.has("filesize") && !f.isNull("filesize") && f.optLong("filesize") > 0) f.optLong("filesize") else null
-                val filesizeApprox = if (f.has("filesize_approx") && !f.isNull("filesize_approx") && f.optLong("filesize_approx") > 0) f.optLong("filesize_approx") else null
+                val tbr = cleanDouble(f, "tbr")
+                val vbr = cleanDouble(f, "vbr")
+                val abr = cleanDouble(f, "abr")
+                val filesize = cleanLong(f, "filesize")
+                val filesizeApprox = cleanLong(f, "filesize_approx")
                 val formatNote = cleanString(f, "format_note", "")
                 val resolution = cleanString(f, "resolution", if (height != null && height > 0) "${height}p" else "")
 

@@ -662,13 +662,23 @@ fun deduplicateVideoFormats(formats: List<FormatInfo>): List<FormatInfo> {
     }
 
     val bestPerResolution = grouped.map { (_, list) ->
-        list.maxWithOrNull(
+        val chosen = list.maxWithOrNull(
             compareBy<FormatInfo> { it.height ?: 0 }
                 .thenBy { it.fps ?: 30.0 }
                 .thenBy { it.tbr ?: it.vbr ?: 0.0 }
                 .thenBy { it.filesize ?: it.filesizeApprox ?: 0L }
                 .thenBy { if (it.ext.lowercase() == "mp4") 1 else 0 }
         ) ?: list.first()
+
+        // Preserve filesize or filesizeApprox from other formats with the same resolution if chosen format has null
+        val bestFilesize = chosen.filesize ?: list.firstNotNullOfOrNull { it.filesize }
+        val bestFilesizeApprox = chosen.filesizeApprox ?: list.firstNotNullOfOrNull { it.filesizeApprox }
+
+        if (bestFilesize != chosen.filesize || bestFilesizeApprox != chosen.filesizeApprox) {
+            chosen.copy(filesize = bestFilesize, filesizeApprox = bestFilesizeApprox)
+        } else {
+            chosen
+        }
     }
 
     return bestPerResolution.sortedWith(
