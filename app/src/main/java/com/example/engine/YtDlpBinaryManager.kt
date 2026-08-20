@@ -155,6 +155,76 @@ object YtDlpBinaryManager {
     }
 
     /**
+     * Downloads and applies the latest yt-dlp update using the youtubedl-android runtime updater,
+     * then executes '--version' against the real Python runtime to verify the new version on disk.
+     */
+    suspend fun updateYoutubeDlp(
+        context: Context,
+        channel: YoutubeDL.UpdateChannel = YoutubeDL.UpdateChannel.STABLE,
+        onProgress: (Float) -> Unit = {}
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        try {
+            AppLogger.i(TAG, "Initiating real yt-dlp runtime update via channel: $channel...")
+            onProgress(15f)
+
+            // Step 1: Ensure underlying runtime is initialized
+            try {
+                YoutubeDL.getInstance().init(appContext)
+            } catch (e: Exception) {
+                AppLogger.d(TAG, "YoutubeDL.init notice: ${e.message}")
+            }
+            onProgress(35f)
+
+            // Step 2: Call real YoutubeDL updater to replace yt-dlp binary/zip on disk
+            AppLogger.i(TAG, "Executing YoutubeDL.getInstance().updateYoutubeDL($channel)...")
+            val updateStatus = YoutubeDL.getInstance().updateYoutubeDL(appContext, channel)
+            AppLogger.i(TAG, "YoutubeDL.updateYoutubeDL finished with status: $updateStatus")
+            onProgress(75f)
+
+            // Step 3: Directly execute '--version' against the newly updated runtime
+            var verifiedVersion: String? = null
+            try {
+                val req = YoutubeDLRequest(emptyList())
+                req.addOption("--version")
+                val response = YoutubeDL.getInstance().execute(req)
+                val stdout = response.out?.trim()
+                val stderr = response.err?.trim()
+                AppLogger.i(TAG, "Post-update runtime '--version' exit code: ${response.exitCode}, stdout: '$stdout', stderr: '$stderr'")
+
+                if (!stdout.isNullOrBlank()) {
+                    verifiedVersion = stdout.lines().firstOrNull { it.isNotBlank() }?.trim()
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Direct execute '--version' check after update: ${e.message}")
+            }
+
+            // Step 4: Fallback to YoutubeDL.getInstance().version(appContext) if direct execute was unavailable
+            if (verifiedVersion.isNullOrBlank()) {
+                verifiedVersion = YoutubeDL.getInstance().version(appContext)
+            }
+
+            if (!verifiedVersion.isNullOrBlank()) {
+                cachedVersion = verifiedVersion
+                appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_VERIFIED_VERSION, verifiedVersion)
+                    .apply()
+
+                onProgress(100f)
+                AppLogger.i(TAG, "yt-dlp successfully updated and verified in runtime: $verifiedVersion (updateStatus: $updateStatus)")
+                Result.success(verifiedVersion)
+            } else {
+                throw Exception("yt-dlp update status was $updateStatus, but the runtime version could not be verified.")
+            }
+        } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
+            AppLogger.e(TAG, "Failed to update yt-dlp engine: $msg")
+            Result.failure(Exception("yt-dlp update failed: $msg", e))
+        }
+    }
+
+    /**
      * Initializes the Android-compatible Python runtime and verifies yt-dlp execution.
      */
     suspend fun installOrUpdateBinary(

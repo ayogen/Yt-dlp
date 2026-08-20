@@ -297,22 +297,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _updateCheckMessage.value = null
             try {
                 AppLogger.i("MainViewModel", "Checking for engine updates...")
-                val latestYtdlp = YtDlpBinaryManager.fetchLatestReleaseTag()
-                val currentYtDlp = _ytdlpStatus.value?.version ?: ""
-                val ytdlpHasUpdate = latestYtdlp != null && latestYtdlp != currentYtDlp
-
-                _versionInfo.value = _versionInfo.value?.copy(
-                    latestVersion = latestYtdlp ?: currentYtDlp,
-                    isUpdateAvailable = ytdlpHasUpdate
-                )
-
-                if (ytdlpHasUpdate) {
-                    _updateCheckMessage.value = "Update available for yt-dlp ($latestYtdlp)"
+                val updateResult = YtDlpBinaryManager.updateYoutubeDlp(getApplication())
+                if (updateResult.isSuccess) {
+                    val verifiedVer = updateResult.getOrNull()
+                    _updateCheckMessage.value = "✓ yt-dlp updated & verified ($verifiedVer)"
+                    _toastMessage.value = "yt-dlp updated to version $verifiedVer"
+                    refreshDiagnostics()
                 } else {
-                    _updateCheckMessage.value = "✓ All engines are up to date."
+                    val ex = updateResult.exceptionOrNull()
+                    val errorMsg = ex?.message ?: "Update check failed"
+                    AppLogger.e("MainViewModel", "Engine update error: $errorMsg")
+                    _updateCheckMessage.value = "Update failed: $errorMsg"
+                    _toastMessage.value = "Update failed: $errorMsg"
                 }
             } catch (e: Exception) {
-                _updateCheckMessage.value = "Failed to check for updates: ${e.message}"
+                val errorMsg = e.message ?: e.javaClass.simpleName
+                AppLogger.e("MainViewModel", "Failed to check for updates: $errorMsg")
+                _updateCheckMessage.value = "Update failed: $errorMsg"
+                _toastMessage.value = "Update failed: $errorMsg"
             } finally {
                 _isCheckingUpdates.value = false
             }
@@ -465,15 +467,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isUpdatingYtDlp.value = true
             _updateProgress.value = 0f
-            val result = YtDlpBinaryManager.installOrUpdateBinary(getApplication()) { prog ->
+            val result = YtDlpBinaryManager.updateYoutubeDlp(getApplication()) { prog ->
                 _updateProgress.value = prog
             }
             _isUpdatingYtDlp.value = false
             if (result.isSuccess) {
-                _toastMessage.value = "yt-dlp updated to version ${result.getOrNull()}"
+                val newVer = result.getOrNull()
+                _toastMessage.value = "yt-dlp updated to version $newVer"
+                _updateCheckMessage.value = "✓ yt-dlp updated & verified ($newVer)"
                 refreshDiagnostics()
             } else {
-                _toastMessage.value = "Update failed: ${result.exceptionOrNull()?.message}"
+                val errorMsg = result.exceptionOrNull()?.message ?: "Unknown error"
+                _toastMessage.value = "Update failed: $errorMsg"
+                _updateCheckMessage.value = "Update failed: $errorMsg"
             }
         }
     }
