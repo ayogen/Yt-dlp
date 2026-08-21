@@ -1,7 +1,5 @@
 package com.example.ui.downloads
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,9 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Delete
@@ -36,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,6 +64,7 @@ import com.example.data.model.MediaType
 import com.example.data.model.formatBytes
 import com.example.data.model.formatEta
 import com.example.data.model.formatSpeed
+import com.example.download.StorageUtils
 import com.example.engine.EngineDiagnosticError
 import com.example.ui.MainViewModel
 import com.example.ui.NavigationTab
@@ -73,9 +75,7 @@ import com.example.ui.components.MediaTypeBadge
 import com.example.ui.components.StatusBadge
 import com.example.ui.components.TechnicalLogsDialog
 import com.example.ui.theme.ElegantAmber
-import com.example.ui.theme.ElegantDarkBackground
 import com.example.ui.theme.ElegantDarkBorder
-import com.example.ui.theme.ElegantDarkBorderSubtle
 import com.example.ui.theme.ElegantDarkCard
 import com.example.ui.theme.ElegantDarkSurfaceVariant
 import com.example.ui.theme.ElegantGreen
@@ -85,8 +85,6 @@ import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
-import com.example.download.StorageUtils
-import java.io.File
 
 @Composable
 fun DownloadsScreen(viewModel: MainViewModel) {
@@ -172,15 +170,25 @@ fun DownloadsScreen(viewModel: MainViewModel) {
                 )
             }
         } else {
+            val queuedTasks = tasks.filter { it.status == DownloadStatus.QUEUED }
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                items(tasks, key = { it.id }) { task ->
+                itemsIndexed(tasks, key = { _, it -> it.id }) { index, task ->
+                    val isQueued = task.status == DownloadStatus.QUEUED
+                    val queuedIndex = if (isQueued) queuedTasks.indexOfFirst { it.id == task.id } else -1
+                    val canMoveUp = isQueued && queuedIndex > 0
+                    val canMoveDown = isQueued && queuedIndex >= 0 && queuedIndex < queuedTasks.size - 1
+
                     DownloadTaskCard(
                         task = task,
+                        canMoveUp = canMoveUp,
+                        canMoveDown = canMoveDown,
+                        onMoveUp = { viewModel.moveQueueItemUp(task.id) },
+                        onMoveDown = { viewModel.moveQueueItemDown(task.id) },
                         onPause = { viewModel.pauseTask(task.id) },
                         onResume = { viewModel.resumeTask(task) },
                         onCancel = { viewModel.cancelTask(task.id) },
@@ -228,6 +236,10 @@ fun DownloadsScreen(viewModel: MainViewModel) {
 @Composable
 fun DownloadTaskCard(
     task: DownloadTaskEntity,
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
     onPause: () -> Unit,
     onResume: () -> Unit,
     onCancel: () -> Unit,
@@ -288,6 +300,20 @@ fun DownloadTaskCard(
                     ) {
                         MediaTypeBadge(mediaType = task.mediaType)
                         StatusBadge(status = task.status)
+                        if (task.qualityLabel.isNotBlank()) {
+                            Surface(
+                                color = ElegantDarkSurfaceVariant,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = task.qualityLabel,
+                                    color = ElegantTextSecondary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -341,6 +367,16 @@ fun DownloadTaskCard(
                     fontSize = 11.sp,
                     color = ElegantAmber,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            // Retry attempt notice if applicable
+            if (task.retryAttempt > 0 && task.status == DownloadStatus.QUEUED) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Auto-retry attempt #${task.retryAttempt} scheduled with exponential backoff",
+                    fontSize = 10.sp,
+                    color = ElegantAmber
                 )
             }
 
@@ -423,12 +459,44 @@ fun DownloadTaskCard(
                     }
 
                     DownloadStatus.QUEUED -> {
-                        Text(
-                            text = "Waiting in queue...",
-                            color = ElegantTextTertiary,
-                            fontSize = 11.sp,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.weight(1f)
-                        )
+                        ) {
+                            Text(
+                                text = "Queue #${task.queuePosition}",
+                                color = ElegantTextSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            if (canMoveUp) {
+                                IconButton(
+                                    onClick = onMoveUp,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ArrowUpward,
+                                        contentDescription = "Move Up in Queue",
+                                        tint = ElegantLavenderPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            if (canMoveDown) {
+                                IconButton(
+                                    onClick = onMoveDown,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ArrowDownward,
+                                        contentDescription = "Move Down in Queue",
+                                        tint = ElegantLavenderPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
                         TextButton(onClick = onCancel) {
                             Text("Cancel", color = ElegantTextSecondary, fontSize = 12.sp)
                         }

@@ -17,6 +17,7 @@ data class DownloadTaskEntity(
     val etaSeconds: Long = 0L,
     val formatId: String = "best",
     val formatDescription: String = "",
+    val qualityLabel: String = "Best",
     val mediaType: MediaType = MediaType.VIDEO,
     val outputPath: String = "",
     val errorMessage: String? = null,
@@ -30,7 +31,9 @@ data class DownloadTaskEntity(
     val targetContainer: String = "mp4",
     val embedSubs: Boolean = false,
     val embedThumbnail: Boolean = true,
-    val subtitleLangs: String = ""
+    val subtitleLangs: String = "",
+    val queuePosition: Int = 0,
+    val retryAttempt: Int = 0
 )
 
 @Entity(tableName = "download_history")
@@ -43,6 +46,8 @@ data class DownloadHistoryEntity(
     val fileSize: Long = 0L,
     val mediaType: MediaType = MediaType.VIDEO,
     val formatDescription: String = "",
+    val qualityLabel: String = "Best",
+    val status: DownloadStatus = DownloadStatus.COMPLETED,
     val completedTimestamp: Long = System.currentTimeMillis(),
     val uploader: String = "",
     val durationSeconds: Long = 0L

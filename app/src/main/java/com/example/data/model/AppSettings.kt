@@ -1,7 +1,7 @@
 package com.example.data.model
 
 data class AppSettings(
-    val maxConcurrentDownloads: Int = 3,
+    val maxConcurrentDownloads: Int = 1,
     val defaultVideoQuality: VideoQualityPreset = VideoQualityPreset.BEST,
     val defaultAudioQuality: AudioQualityPreset = AudioQualityPreset.BEST,
     val defaultContainer: OutputContainer = OutputContainer.MP4,
@@ -20,7 +20,9 @@ data class AppSettings(
     val filenameTemplate: String = "%(title)s.%(ext)s",
     val autoStartDownloads: Boolean = true,
     val confirmDelete: Boolean = true,
-    val darkTheme: Boolean = true
+    val darkTheme: Boolean = true,
+    val detectClipboardLinks: Boolean = true,
+    val customProfilesJson: String = ""
 )
 
 object FilenameTemplatePresets {

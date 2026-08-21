@@ -3,6 +3,7 @@ package com.example.engine
 import com.example.data.model.FormatInfo
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
+import com.example.data.model.PlaylistEntry
 import com.example.data.model.SubtitleTrack
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -61,7 +62,14 @@ object YtDlpProcessRunner {
             }
 
             val json = JSONObject(stdout)
+            val isPlaylistDetected = json.optString("_type") == "playlist" || (json.has("entries") && !json.isNull("entries"))
             val metadata = parseYtDlpJson(json, url)
+
+            if (isPlaylistDetected && metadata.playlistEntries.isEmpty()) {
+                AppLogger.e("YtDlpProcessRunner", "Playlist contains no accessible videos or is private")
+                return@withContext Result.failure(Exception("Playlist contains no accessible videos or is private"))
+            }
+
             Result.success(metadata)
         } catch (e: Exception) {
             val msg = e.message ?: e.javaClass.simpleName
@@ -90,6 +98,7 @@ object YtDlpProcessRunner {
         try {
             val request = YoutubeDLRequest(url)
             request.addOption("--newline")
+            request.addOption("--no-playlist")
 
             // Audio extraction vs Video muxing configuration
             if (mediaType == MediaType.AUDIO) {
@@ -270,16 +279,72 @@ object YtDlpProcessRunner {
         }
     }
 
-    private fun parseYtDlpJson(json: JSONObject, originalUrl: String): MediaMetadata {
+    internal fun parseYtDlpJson(json: JSONObject, originalUrl: String): MediaMetadata {
+        val type = cleanString(json, "_type", "")
+        val hasEntries = json.has("entries") && !json.isNull("entries")
+        val isPlaylist = type.equals("playlist", ignoreCase = true) || hasEntries
+
         val id = cleanString(json, "id", Math.abs(originalUrl.hashCode()).toString())
-        val title = cleanString(json, "title", "Untitled Media")
-        val uploader = cleanString(json, "uploader", cleanString(json, "channel", "Unknown Uploader"))
+        val title = cleanString(json, "title", if (isPlaylist) "Untitled Playlist" else "Untitled Media")
+        val uploader = cleanString(json, "uploader", cleanString(json, "channel", cleanString(json, "playlist_uploader", "Unknown Uploader")))
         val duration = cleanLong(json, "duration") ?: 0L
         val viewCount = cleanLong(json, "view_count")
         val likeCount = cleanLong(json, "like_count")
         val uploadDate = cleanString(json, "upload_date", "")
         val description = cleanString(json, "description", "")
-        val thumbnail = cleanString(json, "thumbnail", "")
+        var rootThumbnail = cleanString(json, "thumbnail", "")
+
+        val playlistEntries = mutableListOf<PlaylistEntry>()
+
+        if (isPlaylist) {
+            val entriesArray = json.optJSONArray("entries")
+            if (entriesArray != null) {
+                val isYouTube = originalUrl.contains("youtube.com", ignoreCase = true) ||
+                        originalUrl.contains("youtu.be", ignoreCase = true) ||
+                        cleanString(json, "extractor", "").contains("youtube", ignoreCase = true) ||
+                        cleanString(json, "extractor_key", "").contains("youtube", ignoreCase = true)
+
+                for (i in 0 until entriesArray.length()) {
+                    val entryObj = entriesArray.optJSONObject(i) ?: continue
+                    val entryId = cleanString(entryObj, "id", "")
+                    var entryUrl = cleanString(entryObj, "url", cleanString(entryObj, "webpage_url", ""))
+                    val entryTitle = cleanString(entryObj, "title", if (entryId.isNotBlank()) "Video $entryId" else "")
+                    val entryDuration = cleanLong(entryObj, "duration") ?: 0L
+                    val entryThumbnail = cleanString(entryObj, "thumbnail", "")
+                    val entryUploader = cleanString(entryObj, "uploader", cleanString(entryObj, "channel", uploader))
+
+                    if (entryUrl.isBlank() && entryId.isNotBlank()) {
+                        if (isYouTube) {
+                            entryUrl = "https://www.youtube.com/watch?v=$entryId"
+                        } else if (entryId.startsWith("http://", ignoreCase = true) || entryId.startsWith("https://", ignoreCase = true)) {
+                            entryUrl = entryId
+                        }
+                    }
+
+                    if (entryUrl.isNotBlank()) {
+                        val validTitle = if (entryTitle.isNotBlank()) entryTitle else "Video ${playlistEntries.size + 1}"
+                        playlistEntries.add(
+                            PlaylistEntry(
+                                id = entryId.ifBlank { "entry_${playlistEntries.size + 1}" },
+                                title = validTitle,
+                                url = entryUrl,
+                                durationSeconds = entryDuration,
+                                thumbnail = entryThumbnail,
+                                uploader = entryUploader,
+                                isSelected = true
+                            )
+                        )
+                    }
+                }
+            }
+
+            if (rootThumbnail.isBlank() && playlistEntries.isNotEmpty()) {
+                val firstThumb = playlistEntries.firstOrNull { it.thumbnail.isNotBlank() }?.thumbnail
+                if (!firstThumb.isNullOrBlank()) {
+                    rootThumbnail = firstThumb
+                }
+            }
+        }
 
         val formatsList = mutableListOf<FormatInfo>()
         val formatsArray = json.optJSONArray("formats")
@@ -339,6 +404,8 @@ object YtDlpProcessRunner {
             }
         }
 
+        val hasValidPlaylistEntries = isPlaylist && playlistEntries.isNotEmpty()
+
         return MediaMetadata(
             id = id,
             title = title,
@@ -349,10 +416,13 @@ object YtDlpProcessRunner {
             likeCount = likeCount,
             uploadDate = uploadDate,
             description = description,
-            thumbnail = thumbnail,
+            thumbnail = rootThumbnail,
+            isPlaylist = hasValidPlaylistEntries,
+            playlistCount = if (hasValidPlaylistEntries) playlistEntries.size else 0,
+            playlistEntries = if (hasValidPlaylistEntries) playlistEntries else emptyList(),
             formats = formatsList,
             subtitles = subtitlesList,
-            extractorName = cleanString(json, "extractor", "yt-dlp")
+            extractorName = cleanString(json, "extractor", if (isPlaylist) "yt-dlp:playlist" else "yt-dlp")
         )
     }
 }

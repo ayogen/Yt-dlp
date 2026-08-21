@@ -25,10 +25,12 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
@@ -283,6 +285,9 @@ fun HistoryScreen(viewModel: MainViewModel) {
                     HistoryItemCard(
                         item = item,
                         formattedDate = dateFormat.format(Date(item.completedTimestamp)),
+                        onRedownload = {
+                            viewModel.redownloadHistoryItem(item)
+                        },
                         onOpen = {
                             if (!item.filePath.isNullOrBlank()) {
                                 val openResult = StorageUtils.openMediaFile(context, item.filePath, item.mediaType)
@@ -398,6 +403,7 @@ fun HistoryScreen(viewModel: MainViewModel) {
 fun HistoryItemCard(
     item: DownloadHistoryEntity,
     formattedDate: String,
+    onRedownload: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onCopyPath: () -> Unit,
@@ -492,6 +498,14 @@ fun HistoryItemCard(
                     onDismissRequest = { showMenu = false },
                     modifier = Modifier.background(ElegantDarkCard)
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("Redownload", color = ElegantLavenderPrimary) },
+                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = ElegantLavenderPrimary) },
+                        onClick = {
+                            showMenu = false
+                            onRedownload()
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("Open File", color = ElegantTextPrimary) },
                         leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = ElegantLavenderPrimary) },

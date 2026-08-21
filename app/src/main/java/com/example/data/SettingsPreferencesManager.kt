@@ -19,7 +19,7 @@ class SettingsPreferencesManager(context: Context) {
     fun loadSettings(): AppSettings {
         return try {
             AppSettings(
-                maxConcurrentDownloads = prefs.getInt(KEY_MAX_CONCURRENT_DOWNLOADS, 3),
+                maxConcurrentDownloads = prefs.getInt(KEY_MAX_CONCURRENT_DOWNLOADS, 1),
                 defaultVideoQuality = parseEnum(prefs.getString(KEY_DEFAULT_VIDEO_QUALITY, null), VideoQualityPreset.BEST),
                 defaultAudioQuality = parseEnum(prefs.getString(KEY_DEFAULT_AUDIO_QUALITY, null), AudioQualityPreset.BEST),
                 defaultContainer = parseEnum(prefs.getString(KEY_DEFAULT_CONTAINER, null), OutputContainer.MP4),
@@ -38,7 +38,9 @@ class SettingsPreferencesManager(context: Context) {
                 filenameTemplate = prefs.getString(KEY_FILENAME_TEMPLATE, "%(title)s.%(ext)s") ?: "%(title)s.%(ext)s",
                 autoStartDownloads = prefs.getBoolean(KEY_AUTO_START_DOWNLOADS, true),
                 confirmDelete = prefs.getBoolean(KEY_CONFIRM_DELETE, true),
-                darkTheme = prefs.getBoolean(KEY_DARK_THEME, true)
+                darkTheme = prefs.getBoolean(KEY_DARK_THEME, true),
+                detectClipboardLinks = prefs.getBoolean(KEY_DETECT_CLIPBOARD_LINKS, true),
+                customProfilesJson = prefs.getString(KEY_CUSTOM_PROFILES_JSON, "") ?: ""
             )
         } catch (e: Exception) {
             AppLogger.w(TAG, "Error loading saved settings, falling back to defaults: ${e.message}")
@@ -69,6 +71,8 @@ class SettingsPreferencesManager(context: Context) {
                 .putBoolean(KEY_AUTO_START_DOWNLOADS, settings.autoStartDownloads)
                 .putBoolean(KEY_CONFIRM_DELETE, settings.confirmDelete)
                 .putBoolean(KEY_DARK_THEME, settings.darkTheme)
+                .putBoolean(KEY_DETECT_CLIPBOARD_LINKS, settings.detectClipboardLinks)
+                .putString(KEY_CUSTOM_PROFILES_JSON, settings.customProfilesJson)
                 .apply()
             AppLogger.d(TAG, "Settings successfully persisted to disk")
         } catch (e: Exception) {
@@ -109,5 +113,7 @@ class SettingsPreferencesManager(context: Context) {
         private const val KEY_AUTO_START_DOWNLOADS = "auto_start_downloads"
         private const val KEY_CONFIRM_DELETE = "confirm_delete"
         private const val KEY_DARK_THEME = "dark_theme"
+        private const val KEY_DETECT_CLIPBOARD_LINKS = "detect_clipboard_links"
+        private const val KEY_CUSTOM_PROFILES_JSON = "custom_profiles_json"
     }
 }

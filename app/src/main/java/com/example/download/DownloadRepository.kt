@@ -29,6 +29,10 @@ class DownloadRepository(
         downloadManager.startTaskExecution(task)
     }
 
+    fun startOrEnqueueDownloads(tasks: List<DownloadTaskEntity>) {
+        downloadManager.enqueueTasks(tasks)
+    }
+
     fun pauseDownload(taskId: String) {
         downloadManager.pauseTask(taskId)
     }
@@ -51,6 +55,18 @@ class DownloadRepository(
 
     fun clearFinishedDownloads() {
         downloadManager.clearFinished()
+    }
+
+    fun moveQueueItemUp(taskId: String) {
+        downloadManager.moveQueueItemUp(taskId)
+    }
+
+    fun moveQueueItemDown(taskId: String) {
+        downloadManager.moveQueueItemDown(taskId)
+    }
+
+    fun reorderQueue(orderedTaskIds: List<String>) {
+        downloadManager.reorderQueue(orderedTaskIds)
     }
 
     suspend fun deleteHistory(id: String, filePath: String?, deleteFile: Boolean = false, appContext: Context? = null) {

@@ -15,7 +15,7 @@ import com.example.data.model.LogEntryEntity
         DownloadHistoryEntity::class,
         LogEntryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

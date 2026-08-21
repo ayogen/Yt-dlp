@@ -12,14 +12,17 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DownloadDao {
-    @Query("SELECT * FROM download_tasks ORDER BY createdTimestamp DESC")
+    @Query("SELECT * FROM download_tasks ORDER BY queuePosition ASC, createdTimestamp DESC")
     fun getAllTasksFlow(): Flow<List<DownloadTaskEntity>>
 
-    @Query("SELECT * FROM download_tasks WHERE status IN ('QUEUED', 'ANALYZING', 'DOWNLOADING', 'PAUSED', 'PROCESSING') ORDER BY createdTimestamp ASC")
+    @Query("SELECT * FROM download_tasks WHERE status IN ('QUEUED', 'ANALYZING', 'DOWNLOADING', 'PAUSED', 'PROCESSING') ORDER BY queuePosition ASC, createdTimestamp ASC")
     fun getActiveAndQueuedTasksFlow(): Flow<List<DownloadTaskEntity>>
 
-    @Query("SELECT * FROM download_tasks WHERE status = 'QUEUED' ORDER BY createdTimestamp ASC")
+    @Query("SELECT * FROM download_tasks WHERE status = 'QUEUED' ORDER BY queuePosition ASC, createdTimestamp ASC")
     suspend fun getQueuedTasks(): List<DownloadTaskEntity>
+
+    @Query("UPDATE download_tasks SET status = 'QUEUED', speedBytesPerSec = 0.0, etaSeconds = 0 WHERE status IN ('DOWNLOADING', 'ANALYZING', 'PROCESSING')")
+    suspend fun resetInterruptedTasksToQueued()
 
     @Query("SELECT * FROM download_tasks WHERE id = :id")
     suspend fun getTaskById(id: String): DownloadTaskEntity?
@@ -30,8 +33,17 @@ interface DownloadDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: DownloadTaskEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTasks(tasks: List<DownloadTaskEntity>)
+
     @Update
     suspend fun updateTask(task: DownloadTaskEntity)
+
+    @Query("UPDATE download_tasks SET queuePosition = :position WHERE id = :id")
+    suspend fun updateTaskPosition(id: String, position: Int)
+
+    @Query("UPDATE download_tasks SET retryAttempt = :attempt, status = :status, errorMessage = :errorMessage WHERE id = :id")
+    suspend fun updateTaskRetry(id: String, attempt: Int, status: DownloadStatus, errorMessage: String? = null)
 
     @Query("UPDATE download_tasks SET progress = :progress, downloadedBytes = :downloadedBytes, totalBytes = :totalBytes, speedBytesPerSec = :speed, etaSeconds = :eta, status = :status WHERE id = :id")
     suspend fun updateTaskProgress(

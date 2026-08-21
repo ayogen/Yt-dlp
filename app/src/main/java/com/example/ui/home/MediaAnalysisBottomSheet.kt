@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -504,14 +507,13 @@ fun MediaAnalysisBottomSheet(
                         }
                     }
 
-                    Column(
+                    LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(160.dp)
-                            .verticalScroll(rememberScrollState())
+                            .heightIn(max = 240.dp)
                     ) {
-                        metadata.playlistEntries.forEachIndexed { index, entry ->
+                        itemsIndexed(metadata.playlistEntries, key = { index, entry -> entry.id.ifBlank { "$index" } }) { index, entry ->
                             val isChecked = selectedPlaylistItems.value.contains(index)
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -535,14 +537,36 @@ fun MediaAnalysisBottomSheet(
                                     },
                                     colors = CheckboxDefaults.colors(checkedColor = ElegantLavenderPrimary)
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = entry.title,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = ElegantTextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                if (entry.thumbnail.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    AsyncImage(
+                                        model = entry.thumbnail,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(40.dp, 26.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(ElegantDarkSurfaceVariant)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = ElegantTextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (entry.durationFormatted.isNotBlank()) {
+                                        Text(
+                                            text = entry.durationFormatted,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = ElegantTextSecondary,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

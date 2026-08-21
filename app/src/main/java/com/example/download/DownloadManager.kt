@@ -45,13 +45,34 @@ class DownloadManager(
     private var queueLoopJob: Job? = null
 
     init {
+        // Cleanup orphaned in-progress tasks on application startup
+        recoverOrphanedTasks()
         startQueueProcessor()
+    }
+
+    private fun recoverOrphanedTasks() {
+        scope.launch {
+            try {
+                // Reset tasks that were interrupted mid-flight on sudden process death back to QUEUED
+                downloadDao.resetInterruptedTasksToQueued()
+                val queued = downloadDao.getQueuedTasks()
+                // Ensure queue positions are assigned cleanly
+                queued.forEachIndexed { index, task ->
+                    if (task.queuePosition != index) {
+                        downloadDao.updateTaskPosition(task.id, index)
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.w("DownloadManager", "Task recovery note: ${e.message}")
+            }
+        }
     }
 
     fun updateSettings(newSettings: AppSettings) {
         _settingsFlow.value = newSettings
         settingsPreferencesManager.saveSettings(newSettings)
-        AppLogger.i("DownloadManager", "Settings updated and saved to disk. Max concurrency: ${newSettings.maxConcurrentDownloads}")
+        AppLogger.i("DownloadManager", "Settings updated. Max concurrency: ${newSettings.maxConcurrentDownloads}")
+        triggerQueueProcessing()
     }
 
     fun startQueueProcessor() {
@@ -59,7 +80,7 @@ class DownloadManager(
         queueLoopJob = scope.launch {
             while (true) {
                 try {
-                    val maxConcurrent = _settingsFlow.value.maxConcurrentDownloads
+                    val maxConcurrent = _settingsFlow.value.maxConcurrentDownloads.coerceAtLeast(1)
                     val currentlyRunning = activeDownloadCount.get()
 
                     if (currentlyRunning < maxConcurrent) {
@@ -74,26 +95,43 @@ class DownloadManager(
                 } catch (e: Exception) {
                     AppLogger.w("DownloadManager", "Queue loop warning: ${e.message}")
                 }
-                delay(1500)
+                delay(1200)
             }
         }
     }
 
     fun enqueueTask(task: DownloadTaskEntity) {
         scope.launch {
-            AppLogger.i("DownloadManager", "Enqueueing task: ${task.title} (${task.id})", task.id)
-            downloadDao.insertTask(task)
+            val queued = downloadDao.getQueuedTasks()
+            val nextPos = if (queued.isEmpty()) 0 else (queued.maxOfOrNull { it.queuePosition } ?: 0) + 1
+            val taskWithPos = task.copy(queuePosition = nextPos)
+            AppLogger.i("DownloadManager", "Enqueueing task at position $nextPos: ${taskWithPos.title} (${taskWithPos.id})", taskWithPos.id)
+            downloadDao.insertTask(taskWithPos)
+            triggerQueueProcessing()
+        }
+    }
+
+    fun enqueueTasks(tasks: List<DownloadTaskEntity>) {
+        if (tasks.isEmpty()) return
+        scope.launch {
+            val queued = downloadDao.getQueuedTasks()
+            var currentNextPos = if (queued.isEmpty()) 0 else (queued.maxOfOrNull { it.queuePosition } ?: 0) + 1
+            val tasksWithPos = tasks.map { task ->
+                task.copy(queuePosition = currentNextPos++)
+            }
+            AppLogger.i("DownloadManager", "Batch enqueueing ${tasksWithPos.size} tasks (starting position: ${tasksWithPos.firstOrNull()?.queuePosition})")
+            downloadDao.insertTasks(tasksWithPos)
             triggerQueueProcessing()
         }
     }
 
     fun triggerQueueProcessing() {
         scope.launch {
-            val maxConcurrent = _settingsFlow.value.maxConcurrentDownloads
+            val maxConcurrent = _settingsFlow.value.maxConcurrentDownloads.coerceAtLeast(1)
             val running = activeDownloadCount.get()
 
             if (running >= maxConcurrent) {
-                AppLogger.d("DownloadManager", "Max concurrency reached ($running / $maxConcurrent). Task queued.")
+                AppLogger.d("DownloadManager", "Max concurrency reached ($running / $maxConcurrent). Tasks remain queued.")
                 return@launch
             }
 
@@ -104,6 +142,43 @@ class DownloadManager(
                     startTaskExecution(task)
                 }
             }
+        }
+    }
+
+    fun moveQueueItemUp(taskId: String) {
+        scope.launch {
+            val queued = downloadDao.getQueuedTasks()
+            val index = queued.indexOfFirst { it.id == taskId }
+            if (index > 0) {
+                val current = queued[index]
+                val prev = queued[index - 1]
+                downloadDao.updateTaskPosition(current.id, prev.queuePosition)
+                downloadDao.updateTaskPosition(prev.id, current.queuePosition)
+                AppLogger.i("DownloadManager", "Moved queued task UP: ${current.title}")
+            }
+        }
+    }
+
+    fun moveQueueItemDown(taskId: String) {
+        scope.launch {
+            val queued = downloadDao.getQueuedTasks()
+            val index = queued.indexOfFirst { it.id == taskId }
+            if (index >= 0 && index < queued.size - 1) {
+                val current = queued[index]
+                val next = queued[index + 1]
+                downloadDao.updateTaskPosition(current.id, next.queuePosition)
+                downloadDao.updateTaskPosition(next.id, current.queuePosition)
+                AppLogger.i("DownloadManager", "Moved queued task DOWN: ${current.title}")
+            }
+        }
+    }
+
+    fun reorderQueue(orderedTaskIds: List<String>) {
+        scope.launch {
+            orderedTaskIds.forEachIndexed { pos, id ->
+                downloadDao.updateTaskPosition(id, pos)
+            }
+            AppLogger.i("DownloadManager", "Queue reordered successfully (${orderedTaskIds.size} tasks)")
         }
     }
 
@@ -120,7 +195,7 @@ class DownloadManager(
 
             try {
                 downloadDao.updateTaskStatus(task.id, DownloadStatus.DOWNLOADING)
-                AppLogger.i("DownloadManager", "Started active download: ${task.title}", task.id)
+                AppLogger.i("DownloadManager", "Started active download: ${task.title} (Attempt: ${task.retryAttempt + 1})", task.id)
 
                 val result = engine.executeDownload(
                     task = task,
@@ -183,6 +258,8 @@ class DownloadManager(
                             fileSize = finalSize,
                             mediaType = task.mediaType,
                             formatDescription = task.formatDescription,
+                            qualityLabel = task.qualityLabel,
+                            status = DownloadStatus.COMPLETED,
                             completedTimestamp = System.currentTimeMillis(),
                             uploader = "Media Creator"
                         )
@@ -194,14 +271,39 @@ class DownloadManager(
                     if (cancelledFlags[task.id] == true) {
                         downloadDao.updateTaskStatus(task.id, DownloadStatus.CANCELLED)
                         AppLogger.i("DownloadManager", "Task cancelled: ${task.title}", task.id)
+                    } else if (pausedFlags[task.id] == true) {
+                        downloadDao.updateTaskStatus(task.id, DownloadStatus.PAUSED)
+                        AppLogger.i("DownloadManager", "Task paused: ${task.title}", task.id)
                     } else {
-                        val diagnostic = engine.classifyError(ex)
-                        downloadDao.updateTaskStatus(
-                            id = task.id,
-                            status = DownloadStatus.FAILED,
-                            errorMessage = "${diagnostic.title}: ${diagnostic.reason}\nAction: ${diagnostic.suggestedAction}"
-                        )
-                        AppLogger.e("DownloadManager", "Task failed: ${task.title} - ${diagnostic.reason}", task.id)
+                        val isTransient = isTransientNetworkError(ex)
+                        val maxRetries = _settingsFlow.value.retryCount
+                        val currentAttempt = task.retryAttempt
+
+                        if (isTransient && currentAttempt < maxRetries) {
+                            val nextAttempt = currentAttempt + 1
+                            val backoffMs = (1000L * (1 shl nextAttempt)).coerceAtMost(30000L)
+                            AppLogger.w("DownloadManager", "Transient failure on ${task.title}. Retrying ($nextAttempt/$maxRetries) in ${backoffMs}ms...", task.id)
+                            
+                            val retryMsg = "Connection interrupted. Retrying ($nextAttempt/$maxRetries)..."
+                            downloadDao.updateTaskRetry(
+                                id = task.id,
+                                attempt = nextAttempt,
+                                status = DownloadStatus.QUEUED,
+                                errorMessage = retryMsg
+                            )
+                            
+                            // Exponential backoff before triggering queue
+                            delay(backoffMs)
+                        } else {
+                            val diagnostic = engine.classifyError(ex)
+                            val userFriendlyMessage = "${diagnostic.title}: ${diagnostic.reason}\nAction: ${diagnostic.suggestedAction}"
+                            downloadDao.updateTaskStatus(
+                                id = task.id,
+                                status = DownloadStatus.FAILED,
+                                errorMessage = userFriendlyMessage
+                            )
+                            AppLogger.e("DownloadManager", "Task failed permanently: ${task.title} - ${diagnostic.reason}", task.id)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -227,8 +329,10 @@ class DownloadManager(
     fun pauseTask(taskId: String) {
         AppLogger.i("DownloadManager", "Pausing task: $taskId", taskId)
         pausedFlags[taskId] = true
+        YtDlpProcessRunner.cancelTaskProcess(taskId)
         scope.launch {
             downloadDao.updateTaskStatus(taskId, DownloadStatus.PAUSED)
+            triggerQueueProcessing()
         }
     }
 
@@ -237,10 +341,14 @@ class DownloadManager(
         if (pausedFlags.containsKey(task.id)) {
             pausedFlags[task.id] = false
             scope.launch {
-                downloadDao.updateTaskStatus(task.id, DownloadStatus.DOWNLOADING)
+                downloadDao.updateTaskStatus(task.id, DownloadStatus.QUEUED)
+                triggerQueueProcessing()
             }
         } else {
-            startTaskExecution(task)
+            scope.launch {
+                downloadDao.updateTaskStatus(task.id, DownloadStatus.QUEUED)
+                triggerQueueProcessing()
+            }
         }
     }
 
@@ -255,16 +363,16 @@ class DownloadManager(
     }
 
     fun retryTask(task: DownloadTaskEntity) {
-        AppLogger.i("DownloadManager", "Retrying task: ${task.id}", task.id)
+        AppLogger.i("DownloadManager", "Retrying task manually: ${task.id}", task.id)
         cancelTask(task.id)
         val resetTask = task.copy(
             status = DownloadStatus.QUEUED,
             progress = 0f,
             errorMessage = null,
+            retryAttempt = 0,
             createdTimestamp = System.currentTimeMillis()
         )
         enqueueTask(resetTask)
-        startTaskExecution(resetTask)
     }
 
     fun deleteTask(taskId: String, deleteFile: Boolean = false) {
@@ -282,7 +390,26 @@ class DownloadManager(
     fun clearFinished() {
         scope.launch {
             downloadDao.clearFinishedTasks()
-            AppLogger.i("DownloadManager", "Cleared finished and cancelled tasks")
+            AppLogger.i("DownloadManager", "Cleared finished, failed and cancelled tasks")
         }
+    }
+
+    private fun isTransientNetworkError(e: Throwable): Boolean {
+        val msg = (e.message ?: "").lowercase()
+        return msg.contains("timeout") ||
+                msg.contains("timed out") ||
+                msg.contains("connection reset") ||
+                msg.contains("connection refused") ||
+                msg.contains("broken pipe") ||
+                msg.contains("unable to download webpage") ||
+                msg.contains("unknownhost") ||
+                msg.contains("temporary failure") ||
+                msg.contains("http error 500") ||
+                msg.contains("http error 502") ||
+                msg.contains("http error 503") ||
+                msg.contains("http error 504") ||
+                msg.contains("http error 429") ||
+                msg.contains("interrupted") ||
+                msg.contains("socket")
     }
 }

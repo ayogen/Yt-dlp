@@ -4,12 +4,19 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Environment
+import android.os.StatFs
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.YtDlpApplication
+import com.example.data.ProfileManager
 import com.example.data.model.AppSettings
+import com.example.data.model.DiagnosticReport
 import com.example.data.model.DownloadHistoryEntity
+import com.example.data.model.DownloadProfile
 import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.EngineState
@@ -19,6 +26,7 @@ import com.example.data.model.LogEntryEntity
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
+import com.example.download.StorageUtils
 import com.example.engine.AppLogger
 import com.example.engine.EngineDiagnosticError
 import com.example.engine.FFmpegBinaryManager
@@ -27,6 +35,7 @@ import com.example.engine.FFmpegStatus
 import com.example.engine.YtDlpBinaryManager
 import com.example.engine.YtDlpStatus
 import com.example.engine.YtDlpVersionInfo
+import com.example.utils.UrlDetector
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -35,6 +44,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 
 sealed class AnalysisUiState {
@@ -119,6 +129,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
+    // Clipboard link detection
+    private val _detectedClipboardUrl = MutableStateFlow<String?>(null)
+    val detectedClipboardUrl: StateFlow<String?> = _detectedClipboardUrl.asStateFlow()
+
+    // Selected profile for quick download
+    private val _activeProfile = MutableStateFlow<DownloadProfile?>(DownloadProfile.DEFAULT_PROFILES[0])
+    val activeProfile: StateFlow<DownloadProfile?> = _activeProfile.asStateFlow()
+
+    // Full diagnostic state
+    private val _isRunningFullDiagnostics = MutableStateFlow(false)
+    val isRunningFullDiagnostics: StateFlow<Boolean> = _isRunningFullDiagnostics.asStateFlow()
+
+    private val _fullDiagnosticReport = MutableStateFlow<DiagnosticReport?>(null)
+    val fullDiagnosticReport: StateFlow<DiagnosticReport?> = _fullDiagnosticReport.asStateFlow()
+
     private var setupJob: Job? = null
 
     val deviceAbi: String
@@ -130,6 +155,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val logs: StateFlow<List<LogEntryEntity>> = AppLogger.logsFlow
+
+    val allProfiles: StateFlow<List<DownloadProfile>> = combine(settings) { s ->
+        ProfileManager.getAllProfiles(s[0].customProfilesJson)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DownloadProfile.DEFAULT_PROFILES)
 
     val filteredHistory: StateFlow<List<DownloadHistoryEntity>> = combine(
         repository.allHistoryFlow,
@@ -162,7 +191,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun checkEnginesOnLaunch() {
         viewModelScope.launch {
-            // First ensure engines are initialized
             YtDlpBinaryManager.ensureInitialized(getApplication())
             FFmpegBinaryManager.ensureInitialized(getApplication())
 
@@ -178,7 +206,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "FFmpeg: ${ffmpeg.state.name} (${ffmpeg.version ?: "N/A"})"
             )
 
-            // If either engine is still not ready, prompt first-launch engine setup
             if (!ytdlp.isReady || !ffmpeg.isAvailable) {
                 _isFirstLaunchSetupVisible.value = true
                 startFirstLaunchSetup()
@@ -186,6 +213,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isFirstLaunchSetupVisible.value = false
             }
         }
+    }
+
+    fun checkClipboardForMediaLink() {
+        if (!settings.value.detectClipboardLinks) return
+        try {
+            val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val item = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+            val extracted = UrlDetector.extractFirstUrl(item)
+            if (extracted != null && extracted != _detectedClipboardUrl.value) {
+                _detectedClipboardUrl.value = extracted
+                AppLogger.d("MainViewModel", "Detected media link from clipboard: $extracted")
+            }
+        } catch (e: Exception) {
+            // Non-critical clipboard access notice
+        }
+    }
+
+    fun dismissDetectedClipboardUrl() {
+        _detectedClipboardUrl.value = null
+    }
+
+    fun selectActiveProfile(profile: DownloadProfile) {
+        _activeProfile.value = profile
+    }
+
+    fun saveCustomProfile(profile: DownloadProfile) {
+        val currentCustom = ProfileManager.deserializeProfiles(settings.value.customProfilesJson).toMutableList()
+        val index = currentCustom.indexOfFirst { it.id == profile.id }
+        if (index >= 0) {
+            currentCustom[index] = profile
+        } else {
+            currentCustom.add(profile)
+        }
+        val serialized = ProfileManager.serializeProfiles(currentCustom)
+        val updated = settings.value.copy(customProfilesJson = serialized)
+        updateSettings(updated)
+        _activeProfile.value = profile
+        _toastMessage.value = "Profile saved: ${profile.name}"
+    }
+
+    fun deleteCustomProfile(profileId: String) {
+        val currentCustom = ProfileManager.deserializeProfiles(settings.value.customProfilesJson).toMutableList()
+        currentCustom.removeAll { it.id == profileId }
+        val serialized = ProfileManager.serializeProfiles(currentCustom)
+        val updated = settings.value.copy(customProfilesJson = serialized)
+        updateSettings(updated)
+        if (_activeProfile.value?.id == profileId) {
+            _activeProfile.value = DownloadProfile.DEFAULT_PROFILES[0]
+        }
+        _toastMessage.value = "Profile removed"
     }
 
     fun startFirstLaunchSetup() {
@@ -297,6 +374,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun runFullDiagnostics() {
+        viewModelScope.launch {
+            _isRunningFullDiagnostics.value = true
+            try {
+                AppLogger.i("MainViewModel", "Running full diagnostic self-tests...")
+                refreshDiagnostics()
+
+                val ytdlp = YtDlpBinaryManager.detect(getApplication())
+                val ffmpeg = FFmpegDetector.detect(getApplication())
+
+                // Check Network
+                val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val activeNetwork = cm.activeNetwork
+                val capabilities = cm.getNetworkCapabilities(activeNetwork)
+                val isConnected = capabilities != null
+                val hasInternet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                val netType = when {
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular Mobile"
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
+                    else -> if (isConnected) "Connected (Other)" else "Offline"
+                }
+
+                // Check Storage
+                val appStorage = getApplication<Application>().filesDir
+                val stat = StatFs(appStorage.absolutePath)
+                val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
+                val totalBytes = stat.blockCountLong * stat.blockSizeLong
+
+                // Check SAF Writable
+                val safUri = settings.value.downloadLocationUri
+                val isSafWritable = if (safUri.isNotBlank()) StorageUtils.isSafUriWritable(getApplication(), safUri) else true
+
+                // Test small temporary write
+                var writePassed = false
+                try {
+                    val testFile = File(appStorage, ".diag_test_${System.currentTimeMillis()}.tmp")
+                    testFile.writeText("transcode_diag_ok")
+                    writePassed = testFile.exists() && testFile.length() > 0
+                    testFile.delete()
+                } catch (e: Exception) {
+                    writePassed = false
+                }
+
+                val report = DiagnosticReport(
+                    appVersion = "1.0.0",
+                    androidSdk = Build.VERSION.SDK_INT,
+                    deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+                    deviceAbi = deviceAbi,
+                    ytdlpStatus = ytdlp.state.name,
+                    ytdlpVersion = ytdlp.version ?: "N/A",
+                    ffmpegStatus = ffmpeg.state.name,
+                    ffmpegVersion = ffmpeg.version ?: "N/A",
+                    ffmpegBinaryPath = ffmpeg.binaryPath ?: "Bundled native binary",
+                    networkConnected = isConnected,
+                    networkType = netType,
+                    networkHasInternet = hasInternet,
+                    internalStorageFreeBytes = freeBytes,
+                    internalStorageTotalBytes = totalBytes,
+                    downloadLocationUri = safUri,
+                    downloadLocationWritable = isSafWritable,
+                    backgroundExecutionActive = tasks.value.any { it.status == DownloadStatus.DOWNLOADING },
+                    activeConcurrencySlots = tasks.value.count { it.status == DownloadStatus.DOWNLOADING },
+                    maxConcurrentDownloads = settings.value.maxConcurrentDownloads,
+                    storageTestPassed = writePassed,
+                    diagnosticsLogsSummary = "Diagnostic tests completed successfully."
+                )
+                _fullDiagnosticReport.value = report
+                _toastMessage.value = "Diagnostic complete: All subsystems evaluated"
+            } catch (e: Exception) {
+                AppLogger.e("MainViewModel", "Full diagnostic failed: ${e.message}")
+                _toastMessage.value = "Diagnostic error: ${e.message}"
+            } finally {
+                _isRunningFullDiagnostics.value = false
+            }
+        }
+    }
+
     fun checkForEngineUpdates() {
         viewModelScope.launch {
             _isCheckingUpdates.value = true
@@ -366,13 +521,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         audioBitrate: Int?,
         embedSubs: Boolean,
         embedThumbnail: Boolean,
-        selectedPlaylistIndices: Set<Int> = emptySet()
+        selectedPlaylistIndices: Set<Int> = emptySet(),
+        qualityLabel: String = "Best"
     ) {
         viewModelScope.launch {
             if (metadata.isPlaylist && selectedPlaylistIndices.isNotEmpty()) {
                 val totalSelected = selectedPlaylistIndices.size
                 var idx = 1
-                selectedPlaylistIndices.forEach { itemIndex ->
+                val tasksToEnqueue = mutableListOf<DownloadTaskEntity>()
+                selectedPlaylistIndices.sorted().forEach { itemIndex ->
                     val entry = metadata.playlistEntries.getOrNull(itemIndex)
                     if (entry != null) {
                         val task = DownloadTaskEntity(
@@ -383,6 +540,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             status = DownloadStatus.QUEUED,
                             formatId = selectedFormat?.formatId ?: "best",
                             formatDescription = selectedFormat?.displayResolution ?: "Best",
+                            qualityLabel = qualityLabel,
                             mediaType = mediaType,
                             isPlaylist = true,
                             playlistIndex = idx,
@@ -392,16 +550,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             embedSubs = embedSubs,
                             embedThumbnail = embedThumbnail
                         )
-                        repository.startOrEnqueueDownload(task)
+                        tasksToEnqueue.add(task)
                         idx++
                     }
                 }
-                _toastMessage.value = "Enqueued $totalSelected playlist videos"
+                if (tasksToEnqueue.isNotEmpty()) {
+                    repository.startOrEnqueueDownloads(tasksToEnqueue)
+                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} playlist items"
+                }
             } else {
                 val formatDesc = if (mediaType == MediaType.AUDIO) {
                     "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
                 } else {
-                    "${selectedFormat?.displayResolution ?: "Best"} (${targetContainer.ext.uppercase()})"
+                    "${selectedFormat?.displayResolution ?: qualityLabel} (${targetContainer.ext.uppercase()})"
                 }
 
                 val task = DownloadTaskEntity(
@@ -412,6 +573,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     status = DownloadStatus.QUEUED,
                     formatId = selectedFormat?.formatId ?: "best",
                     formatDescription = formatDesc,
+                    qualityLabel = qualityLabel,
                     totalBytes = selectedFormat?.filesize ?: selectedFormat?.filesizeApprox ?: 0L,
                     mediaType = mediaType,
                     audioBitrate = audioBitrate,
@@ -435,6 +597,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteTask(taskId: String, deleteFile: Boolean = false) = repository.deleteDownload(taskId, deleteFile)
     fun clearFinishedTasks() = repository.clearFinishedDownloads()
 
+    fun moveQueueItemUp(taskId: String) = repository.moveQueueItemUp(taskId)
+    fun moveQueueItemDown(taskId: String) = repository.moveQueueItemDown(taskId)
+
+    fun redownloadHistoryItem(item: DownloadHistoryEntity) {
+        _currentTab.value = NavigationTab.HOME
+        analyzeUrl(item.url)
+        _toastMessage.value = "Analyzing: ${item.title.take(30)}..."
+    }
+
     fun deleteHistory(id: String, filePath: String?, deleteFile: Boolean = false) {
         viewModelScope.launch {
             repository.deleteHistory(id, filePath, deleteFile)
@@ -453,8 +624,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onDownloadLocationSelected(treeUri: android.net.Uri) {
-        val success = com.example.download.StorageUtils.takePersistableUriPermission(getApplication(), treeUri)
-        val displayName = com.example.download.StorageUtils.getDisplayNameForTreeUri(getApplication(), treeUri.toString())
+        val success = StorageUtils.takePersistableUriPermission(getApplication(), treeUri)
+        val displayName = StorageUtils.getDisplayNameForTreeUri(getApplication(), treeUri.toString())
         val updated = settings.value.copy(
             downloadLocationUri = treeUri.toString(),
             downloadLocationDisplayName = displayName

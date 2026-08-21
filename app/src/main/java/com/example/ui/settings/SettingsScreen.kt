@@ -19,23 +19,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cookie
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SettingsSuggest
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -54,8 +55,9 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -78,7 +80,6 @@ import com.example.data.model.AudioFormat
 import com.example.data.model.EngineState
 import com.example.data.model.OutputContainer
 import com.example.download.StorageUtils
-import com.example.engine.FFmpegState
 import com.example.engine.FilenameFormatter
 import com.example.ui.MainViewModel
 import com.example.ui.components.TechnicalLogsDialog
@@ -108,6 +109,9 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val isCheckingUpdates by viewModel.isCheckingUpdates.collectAsState()
     val updateCheckMessage by viewModel.updateCheckMessage.collectAsState()
     val logs by viewModel.logs.collectAsState()
+    val allProfiles by viewModel.allProfiles.collectAsState()
+    val isRunningFullDiagnostics by viewModel.isRunningFullDiagnostics.collectAsState()
+    val fullDiagnosticReport by viewModel.fullDiagnosticReport.collectAsState()
 
     var showLogsDialog by remember { mutableStateOf(false) }
 
@@ -369,15 +373,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
                                 fontSize = 11.sp
                             )
                         }
-                        if (ffmpegStatus?.ffprobeVersion != null) {
-                            Text(
-                                text = "FFprobe: ${ffmpegStatus?.ffprobeVersion}",
-                                color = ElegantTextTertiary,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                maxLines = 1
-                            )
-                        }
                     }
 
                     Button(
@@ -533,39 +528,12 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         }
                     }
                 }
-
-                // Subfolders mapping visual explanation
-                Spacer(modifier = Modifier.height(14.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF141218))
-                        .padding(10.dp)
-                ) {
-                    Column {
-                        Text(
-                            text = "Automatic Media Subfolder Routing:",
-                            fontSize = 10.sp,
-                            color = ElegantTextTertiary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "• Video/ (MP4, MKV, WebM videos)\n• Music/ (MP3, M4A, FLAC, AAC tracks)\n• Audio/ (Opus, WAV, general audio)\n• Subtitles/ (.vtt, .srt tracks)\n• Images/ (Thumbnails, cover art)",
-                            fontSize = 11.sp,
-                            color = ElegantTextSecondary,
-                            lineHeight = 16.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
             }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 3: Download Configuration
+        // Section 3: Download Configuration & Behavior
         SettingsSectionHeader(icon = Icons.Default.Download, title = "Download Configuration")
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -576,6 +544,34 @@ fun SettingsScreen(viewModel: MainViewModel) {
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+                // Clipboard Auto-Detection
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "Clipboard Link Detection", fontWeight = FontWeight.Bold, color = ElegantTextPrimary, fontSize = 13.sp)
+                        Text(text = "Prompt to download when a video link is copied", color = ElegantTextSecondary, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = currentSettings.detectClipboardLinks,
+                        onCheckedChange = {
+                            val updated = currentSettings.copy(detectClipboardLinks = it)
+                            currentSettings = updated
+                            viewModel.updateSettings(updated)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = ElegantLavenderPrimary,
+                            checkedTrackColor = ElegantDarkSurfaceVariant
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Divider(color = ElegantDarkBorder)
+                Spacer(modifier = Modifier.height(12.dp))
+
                 // Max Concurrent Downloads
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -584,7 +580,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 ) {
                     Column {
                         Text(text = "Simultaneous Downloads", fontWeight = FontWeight.Bold, color = ElegantTextPrimary, fontSize = 13.sp)
-                        Text(text = "Max active downloads at once", color = ElegantTextSecondary, fontSize = 11.sp)
+                        Text(text = "Max active downloads at once (Queueing)", color = ElegantTextSecondary, fontSize = 11.sp)
                     }
                     Text(
                         text = "${currentSettings.maxConcurrentDownloads}",
@@ -601,8 +597,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         currentSettings = updated
                         viewModel.updateSettings(updated)
                     },
-                    valueRange = 1f..10f,
-                    steps = 8,
+                    valueRange = 1f..5f,
+                    steps = 3,
                     colors = SliderDefaults.colors(
                         thumbColor = ElegantLavenderPrimary,
                         activeTrackColor = ElegantLavenderPrimary,
@@ -743,8 +739,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         Text(
                             text = FilenameFormatter.format(
                                 template = currentSettings.filenameTemplate,
-                                title = "Rick Astley - Never Gonna Give You Up",
-                                uploader = "RickAstleyVEVO",
+                                title = "Sample Media Title",
+                                uploader = "ContentCreator",
                                 id = "dQw4w9WgXcQ",
                                 ext = "mp4"
                             ),
@@ -759,7 +755,144 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Section 5: Advanced & Cookies
+        // Section 5: Diagnostics, Self-Test & Live Logs
+        SettingsSectionHeader(icon = Icons.Default.HealthAndSafety, title = "System Health & Diagnostics")
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
+            shape = RoundedCornerShape(16.dp),
+            border = CardDefaults.outlinedCardBorder().copy(brush = Brush.verticalGradient(listOf(ElegantDarkBorder, Color.Transparent))),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Subsystem Self-Test & Diagnostics",
+                    fontWeight = FontWeight.Bold,
+                    color = ElegantTextPrimary,
+                    fontSize = 13.sp
+                )
+                Text(
+                    text = "Verify binaries, network capability, storage permissions, and write integrity",
+                    color = ElegantTextSecondary,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { viewModel.runFullDiagnostics() },
+                        enabled = !isRunningFullDiagnostics,
+                        colors = ButtonDefaults.buttonColors(containerColor = ElegantLavenderPrimary, contentColor = ElegantLavenderOnPrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isRunningFullDiagnostics) {
+                            CircularProgressIndicator(
+                                color = ElegantLavenderOnPrimary,
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Evaluating...", fontSize = 12.sp)
+                        } else {
+                            Text("Run Full Diagnostics", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
+                    Button(
+                        onClick = { showLogsDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = ElegantDarkSurfaceVariant, contentColor = ElegantTextPrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.ListAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Live Logs", fontSize = 12.sp)
+                    }
+                }
+
+                // Show report summary if generated
+                fullDiagnosticReport?.let { report ->
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF141218))
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Diagnostic Results", fontWeight = FontWeight.Bold, color = ElegantGreen, fontSize = 12.sp)
+                                TextButton(
+                                    onClick = {
+                                        viewModel.copyToClipboard(report.toSanitizedMarkdown(), "Diagnostic Report")
+                                    }
+                                ) {
+                                    Text("Copy Markdown", color = ElegantLavenderPrimary, fontSize = 11.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "• yt-dlp: ${report.ytdlpStatus} (${report.ytdlpVersion})\n" +
+                                        "• FFmpeg: ${report.ffmpegStatus} (${report.ffmpegVersion})\n" +
+                                        "• Network: ${report.networkType} (Internet: ${report.networkHasInternet})\n" +
+                                        "• Storage Write Test: ${if (report.storageTestPassed) "PASS ✓" else "FAIL ✗"}\n" +
+                                        "• Location: ${if (report.downloadLocationWritable) "Writable ✓" else "Not Writable"}",
+                                fontSize = 11.sp,
+                                color = ElegantTextSecondary,
+                                lineHeight = 16.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // Section 6: Custom Profiles Management
+        val customProfiles = allProfiles.filter { !it.isPreset }
+        if (customProfiles.isNotEmpty()) {
+            SettingsSectionHeader(icon = Icons.Default.SettingsSuggest, title = "Custom Download Profiles")
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
+                shape = RoundedCornerShape(16.dp),
+                border = CardDefaults.outlinedCardBorder().copy(brush = Brush.verticalGradient(listOf(ElegantDarkBorder, Color.Transparent))),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    customProfiles.forEach { profile ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                Text(text = profile.name, fontWeight = FontWeight.Bold, color = ElegantTextPrimary, fontSize = 13.sp)
+                                Text(
+                                    text = "${profile.mediaType.name} • ${if (profile.mediaType == com.example.data.model.MediaType.AUDIO) "${profile.audioBitrate}kbps" else profile.videoQuality} • ${profile.container.uppercase()}",
+                                    color = ElegantTextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            IconButton(onClick = { viewModel.deleteCustomProfile(profile.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete Profile", tint = ElegantRed, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+
+        // Section 7: Authentication & Advanced
         SettingsSectionHeader(icon = Icons.Default.Cookie, title = "Authentication & CLI Arguments")
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -842,57 +975,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Section 6: Diagnostics & Live Logs
-        SettingsSectionHeader(icon = Icons.Default.ListAlt, title = "Diagnostics & System Logs")
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
-            shape = RoundedCornerShape(16.dp),
-            border = CardDefaults.outlinedCardBorder().copy(brush = Brush.verticalGradient(listOf(ElegantDarkBorder, Color.Transparent))),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Real-Time Engine Logs",
-                    fontWeight = FontWeight.Bold,
-                    color = ElegantTextPrimary,
-                    fontSize = 13.sp
-                )
-                Text(
-                    text = "Inspect background commands, extraction traces, and error outputs",
-                    color = ElegantTextSecondary,
-                    fontSize = 11.sp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = { showLogsDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = ElegantLavenderPrimary, contentColor = ElegantLavenderOnPrimary),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.testTag("view_system_logs_button")
-                    ) {
-                        Icon(Icons.Default.ListAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("View Engine Logs", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val sysInfo = "ABI: ${viewModel.deviceAbi}\nyt-dlp: ${ytdlpStatus?.version ?: versionInfo?.currentVersion ?: "Not Installed"} (State: ${ytdlpStatus?.state})\nFFmpeg: ${ffmpegStatus?.version ?: "Not Installed"} (State: ${ffmpegStatus?.state})\nSettings: $currentSettings"
-                            viewModel.copyToClipboard(sysInfo, "System Diagnostics")
-                        },
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text("Copy System Info", fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-
         Spacer(modifier = Modifier.height(24.dp))
 
         // Legal & Responsible Use Notice
@@ -909,7 +991,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "This application is a generic client interface powered by yt-dlp. Please ensure you have permission to download media and adhere to all relevant intellectual property laws and terms of service.",
+                    text = "This application is a media management tool powered by yt-dlp and FFmpeg. Please ensure you have permission to download media and adhere to all relevant intellectual property laws and terms of service.",
                     color = ElegantTextTertiary,
                     fontSize = 10.sp,
                     lineHeight = 14.sp
