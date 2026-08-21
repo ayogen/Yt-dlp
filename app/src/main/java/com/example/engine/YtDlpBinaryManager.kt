@@ -37,7 +37,8 @@ object YtDlpBinaryManager {
     private const val TAG = "YtDlpBinaryManager"
     private const val PREFS_NAME = "ytdlp_engine_prefs"
     private const val KEY_VERIFIED_VERSION = "verified_version"
-    private const val OBSOLETE_BUNDLED_VERSION = "2025.02.19"
+    private const val KEY_IS_UPDATED = "is_runtime_updated"
+    private val LEGACY_BOOTSTRAP_VERSIONS = setOf("2024.09.27", "2025.02.19")
 
     @Volatile
     var isInitialized = false
@@ -66,7 +67,8 @@ object YtDlpBinaryManager {
 
     /**
      * Initializes the YoutubeDL native Python runtime and packages.
-     * This is idempotent, thread-safe, and executed during app startup.
+     * On clean install / bootstrap, if an updated runtime is not present, it executes the canonical update.
+     * On subsequent restarts, it detects the existing updated runtime without downloading again.
      */
     suspend fun ensureInitialized(context: Context): Result<String> = withContext(Dispatchers.IO) {
         operationMutex.withLock {
@@ -77,18 +79,28 @@ object YtDlpBinaryManager {
     private suspend fun ensureInitializedInternal(appContext: Context): Result<String> {
         return try {
             if (!isInitialized) {
-                AppLogger.i(TAG, "Initializing YoutubeDL runtime...")
+                AppLogger.i(TAG, "[Startup] Initializing native Python/YoutubeDL runtime...")
                 YoutubeDL.getInstance().init(appContext)
                 isInitialized = true
+                AppLogger.i(TAG, "[Startup] Native YoutubeDL runtime initialized")
             }
 
-            var ver = cachedVersion
-            if (ver.isNullOrBlank()) {
-                val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                ver = prefs.getString(KEY_VERIFIED_VERSION, null)
+            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val savedVer = prefs.getString(KEY_VERIFIED_VERSION, null)
+            val isUpdated = prefs.getBoolean(KEY_IS_UPDATED, false)
+
+            // Check if we already have an existing verified updated runtime
+            if (!savedVer.isNullOrBlank() && isUpdated && !LEGACY_BOOTSTRAP_VERSIONS.contains(savedVer)) {
+                cachedVersion = savedVer
+                AppLogger.i(TAG, "[Startup] Existing updated runtime detected: version $savedVer. No startup download needed.")
+                AppLogger.i(TAG, "[Startup] Engine READY: version $savedVer")
+                return Result.success(savedVer)
             }
-            if (ver.isNullOrBlank()) {
-                ver = try {
+
+            // Otherwise, check current on-disk version to see if update is needed
+            var rawVersion = cachedVersion
+            if (rawVersion.isNullOrBlank()) {
+                rawVersion = try {
                     val req = YoutubeDLRequest(emptyList())
                     req.addOption("--version")
                     val resp = YoutubeDL.getInstance().execute(req)
@@ -102,22 +114,36 @@ object YtDlpBinaryManager {
                 }
             }
 
-            // If verified version exists and is not the obsolete 2025.02.19 bundle
-            if (!ver.isNullOrBlank() && ver != OBSOLETE_BUNDLED_VERSION) {
-                cachedVersion = ver
-                appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .edit()
-                    .putString(KEY_VERIFIED_VERSION, ver)
+            if (!rawVersion.isNullOrBlank() && !LEGACY_BOOTSTRAP_VERSIONS.contains(rawVersion) && isUpdated) {
+                cachedVersion = rawVersion
+                prefs.edit()
+                    .putString(KEY_VERIFIED_VERSION, rawVersion)
+                    .putBoolean(KEY_IS_UPDATED, true)
                     .apply()
-                AppLogger.i(TAG, "yt-dlp runtime initialized and ready: version $ver")
-                Result.success(ver)
+                AppLogger.i(TAG, "[Startup] Existing runtime verified on disk: version $rawVersion")
+                AppLogger.i(TAG, "[Startup] Engine READY: version $rawVersion")
+                return Result.success(rawVersion)
+            }
+
+            // Bundled runtime or outdated runtime detected - startup update is required
+            val detectedDesc = rawVersion ?: "none"
+            AppLogger.i(TAG, "[Startup] Bundled bootstrap runtime detected ($detectedDesc). Startup update is required to install current yt-dlp release.")
+            AppLogger.i(TAG, "[Startup] Startup update started...")
+
+            val updateResult = updateYoutubeDlpInternal(appContext, YoutubeDL.UpdateChannel.STABLE) { _ -> }
+            if (updateResult.isSuccess) {
+                val newVer = updateResult.getOrThrow()
+                AppLogger.i(TAG, "[Startup] Startup update completed successfully. Verified runtime version: $newVer. Engine READY.")
+                Result.success(newVer)
             } else {
-                AppLogger.i(TAG, "yt-dlp runtime initialized (current version check pending)")
-                Result.success(ver ?: "")
+                val err = updateResult.exceptionOrNull()?.message ?: "Startup update failed"
+                AppLogger.w(TAG, "[Startup] Startup update notice: $err")
+                // If update failed (e.g. offline), return failure so detect() accurately reports status
+                Result.failure(Exception("yt-dlp startup setup needs network to install current release: $err"))
             }
         } catch (e: Exception) {
             val msg = e.message ?: e.javaClass.simpleName
-            AppLogger.e(TAG, "YoutubeDL.init failed: $msg")
+            AppLogger.e(TAG, "[Startup] YoutubeDL ensureInitialized failed: $msg")
             Result.failure(e)
         }
     }
@@ -128,15 +154,13 @@ object YtDlpBinaryManager {
             if (!isInitialized) {
                 YoutubeDL.getInstance().init(appContext)
                 isInitialized = true
-                val ver = YoutubeDL.getInstance().version(appContext)
-                if (!ver.isNullOrBlank() && ver != OBSOLETE_BUNDLED_VERSION) {
-                    cachedVersion = ver
-                    appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        .edit()
-                        .putString(KEY_VERIFIED_VERSION, ver)
-                        .apply()
+                val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val savedVer = prefs.getString(KEY_VERIFIED_VERSION, null)
+                val isUpdated = prefs.getBoolean(KEY_IS_UPDATED, false)
+                if (!savedVer.isNullOrBlank() && isUpdated && !LEGACY_BOOTSTRAP_VERSIONS.contains(savedVer)) {
+                    cachedVersion = savedVer
+                    AppLogger.i(TAG, "[Startup] Synchronous init: detected verified runtime $savedVer")
                 }
-                AppLogger.i(TAG, "YoutubeDL synchronous init completed: ${ver ?: "ready"}")
             }
         } catch (e: Exception) {
             AppLogger.w(TAG, "YoutubeDL synchronous init exception: ${e.message}")
@@ -152,11 +176,12 @@ object YtDlpBinaryManager {
 
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedVer = cachedVersion ?: prefs.getString(KEY_VERIFIED_VERSION, null)
+        val isUpdated = prefs.getBoolean(KEY_IS_UPDATED, false)
 
         val isYtDlpExtracted = ytdlpFile.exists() || ytdlpDir.exists() || isInitialized
 
-        // Valid current runtime present
-        return if (savedVer != null && savedVer != OBSOLETE_BUNDLED_VERSION && (isYtDlpExtracted || pythonPkg.exists())) {
+        // Valid current updated runtime present
+        return if (savedVer != null && isUpdated && !LEGACY_BOOTSTRAP_VERSIONS.contains(savedVer) && (isYtDlpExtracted || pythonPkg.exists())) {
             YtDlpStatus(
                 state = EngineState.READY,
                 version = savedVer,
@@ -167,8 +192,8 @@ object YtDlpBinaryManager {
                 guidance = "yt-dlp Python runtime is active and verified ($savedVer).",
                 diagnosticDetails = "Version: $savedVer | ABI: $primaryAbi | Runtime: Android Python 3"
             )
-        } else if (savedVer == OBSOLETE_BUNDLED_VERSION) {
-            // Outdated version needs update to current runtime
+        } else if (savedVer != null && LEGACY_BOOTSTRAP_VERSIONS.contains(savedVer)) {
+            // Outdated bootstrap version needs update to current runtime
             YtDlpStatus(
                 state = EngineState.MISSING,
                 version = savedVer,
@@ -176,7 +201,7 @@ object YtDlpBinaryManager {
                 isExecutable = false,
                 latestVersion = null,
                 isUpdateAvailable = true,
-                guidance = "yt-dlp runtime is outdated ($savedVer). Updating to current release...",
+                guidance = "yt-dlp runtime is outdated bootstrap ($savedVer). Updating to current release...",
                 diagnosticDetails = "Outdated version $savedVer | ABI: $primaryAbi"
             )
         } else {
@@ -187,7 +212,7 @@ object YtDlpBinaryManager {
                 isExecutable = false,
                 latestVersion = null,
                 isUpdateAvailable = false,
-                guidance = "yt-dlp Python runtime is initializing...",
+                guidance = "yt-dlp Python runtime is uninitialized. First-launch setup required.",
                 diagnosticDetails = "Runtime uninitialized | ABI: $primaryAbi"
             )
         }
@@ -279,6 +304,7 @@ object YtDlpBinaryManager {
                 appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_VERIFIED_VERSION, verifiedVersion)
+                    .putBoolean(KEY_IS_UPDATED, true)
                     .apply()
 
                 onProgress(100f)
@@ -313,7 +339,7 @@ object YtDlpBinaryManager {
         onProgress: (Float) -> Unit
     ): Result<String> {
         return try {
-            AppLogger.i(TAG, "Starting first-launch / clean install for yt-dlp runtime...")
+            AppLogger.i(TAG, "[Install] Starting first-launch / clean install for yt-dlp runtime...")
             onProgress(10f)
 
             // Step 1: Initialize YoutubeDL native runtime & Python stdlib
@@ -337,13 +363,13 @@ object YtDlpBinaryManager {
                 val installedVer = updateResult.getOrNull()
                 if (!installedVer.isNullOrBlank()) {
                     onProgress(100f)
-                    AppLogger.i(TAG, "First-launch yt-dlp runtime installation successful: $installedVer")
+                    AppLogger.i(TAG, "[Install] First-launch yt-dlp runtime installation successful: $installedVer")
                     return Result.success(installedVer)
                 }
             }
 
             // If updateYoutubeDlp failed (e.g. offline first launch), verify whether a working runtime is already available
-            AppLogger.w(TAG, "yt-dlp online update step returned: ${updateResult.exceptionOrNull()?.message}, checking runtime execution...")
+            AppLogger.w(TAG, "[Install] yt-dlp online update step returned: ${updateResult.exceptionOrNull()?.message}, checking runtime execution...")
             var verifiedVersion: String? = null
             try {
                 val req = YoutubeDLRequest(emptyList())
@@ -365,15 +391,16 @@ object YtDlpBinaryManager {
                 }
             }
 
-            if (!verifiedVersion.isNullOrBlank() && verifiedVersion != OBSOLETE_BUNDLED_VERSION) {
+            if (!verifiedVersion.isNullOrBlank() && !LEGACY_BOOTSTRAP_VERSIONS.contains(verifiedVersion)) {
                 cachedVersion = verifiedVersion
                 appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_VERIFIED_VERSION, verifiedVersion)
+                    .putBoolean(KEY_IS_UPDATED, true)
                     .apply()
 
                 onProgress(100f)
-                AppLogger.i(TAG, "yt-dlp verified successfully inside Android Python runtime: $verifiedVersion")
+                AppLogger.i(TAG, "[Install] yt-dlp verified successfully inside Android Python runtime: $verifiedVersion")
                 Result.success(verifiedVersion)
             } else {
                 val failureReason = updateResult.exceptionOrNull()?.message ?: "yt-dlp runtime could not be installed on device."
@@ -381,7 +408,7 @@ object YtDlpBinaryManager {
             }
         } catch (e: Exception) {
             val msg = e.message ?: e.javaClass.simpleName
-            AppLogger.e(TAG, "Failed to install yt-dlp runtime: $msg")
+            AppLogger.e(TAG, "[Install] Failed to install yt-dlp runtime: $msg")
             Result.failure(Exception("yt-dlp setup failed: $msg", e))
         }
     }
