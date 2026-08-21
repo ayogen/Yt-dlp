@@ -71,7 +71,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.DownloadHistoryEntity
-import com.example.data.model.DownloadProfile
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
 import com.example.data.model.formatBytes
@@ -90,7 +89,6 @@ import com.example.ui.theme.ElegantRed
 import com.example.ui.theme.ElegantTextPrimary
 import com.example.ui.theme.ElegantTextSecondary
 import com.example.ui.theme.ElegantTextTertiary
-import java.util.UUID
 
 @Composable
 fun HomeScreen(viewModel: MainViewModel) {
@@ -100,11 +98,8 @@ fun HomeScreen(viewModel: MainViewModel) {
     val historyList by viewModel.filteredHistory.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val detectedClipboardUrl by viewModel.detectedClipboardUrl.collectAsState()
-    val allProfiles by viewModel.allProfiles.collectAsState()
-    val activeProfile by viewModel.activeProfile.collectAsState()
 
     var activeErrorDialog by remember { mutableStateOf<EngineDiagnosticError?>(null) }
-    var showCreateProfileDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.checkClipboardForMediaLink()
@@ -272,62 +267,6 @@ fun HomeScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        // Preset Profiles Row
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = "Download Profiles",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = ElegantTextPrimary
-            )
-            TextButton(onClick = { showCreateProfileDialog = true }) {
-                Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = ElegantLavenderPrimary)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("New Profile", color = ElegantLavenderPrimary, fontSize = 12.sp)
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            items(allProfiles) { profile ->
-                val isSelected = activeProfile?.id == profile.id
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { viewModel.selectActiveProfile(profile) },
-                    label = {
-                        Text(
-                            text = profile.name,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 12.sp
-                        )
-                    },
-                    leadingIcon = if (isSelected) {
-                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    } else null,
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ElegantLavenderPrimary,
-                        selectedLabelColor = ElegantLavenderOnPrimary,
-                        containerColor = ElegantDarkCard,
-                        labelColor = ElegantTextPrimary
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = isSelected,
-                        borderColor = if (isSelected) ElegantLavenderPrimary else ElegantDarkBorder
-                    )
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
         // URL Input Card
         Card(
             colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
@@ -347,7 +286,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                 OutlinedTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
-                    placeholder = { Text("Paste video, audio, or playlist link...", color = ElegantTextTertiary, fontSize = 13.sp) },
+                    placeholder = { Text("Paste a media link (Video, Audio, Image, Carousel, Playlist)...", color = ElegantTextTertiary, fontSize = 13.sp) },
                     leadingIcon = {
                         Icon(imageVector = Icons.Default.Link, contentDescription = null, tint = ElegantLavenderPrimary)
                     },
@@ -416,11 +355,11 @@ fun HomeScreen(viewModel: MainViewModel) {
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Extracting Metadata...", fontWeight = FontWeight.Bold)
+                        Text(text = "Analyzing & Classifying Media...", fontWeight = FontWeight.Bold)
                     } else {
                         Icon(imageVector = Icons.Default.Search, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Extract Formats & Info", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(text = "Analyze Media", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
             }
@@ -530,7 +469,7 @@ fun HomeScreen(viewModel: MainViewModel) {
             metadata = meta,
             onDismiss = { viewModel.clearAnalysis() },
             onDownload = { format, mediaType, container, bitrate, embedSubs, embedThumb, playlistSel ->
-                val quality = format?.displayResolution ?: activeProfile?.videoQuality ?: "Best"
+                val quality = format?.displayResolution ?: "Best"
                 viewModel.startDownload(
                     metadata = meta,
                     selectedFormat = format,
@@ -554,118 +493,6 @@ fun HomeScreen(viewModel: MainViewModel) {
             onCopy = { viewModel.copyToClipboard(it, "Error details") }
         )
     }
-
-    // Create Custom Profile Dialog
-    if (showCreateProfileDialog) {
-        CreateProfileDialog(
-            onDismiss = { showCreateProfileDialog = false },
-            onSave = { newProf ->
-                viewModel.saveCustomProfile(newProf)
-                showCreateProfileDialog = false
-            }
-        )
-    }
-}
-
-@Composable
-fun CreateProfileDialog(
-    onDismiss: () -> Unit,
-    onSave: (DownloadProfile) -> Unit
-) {
-    var name by remember { mutableStateOf("") }
-    var mediaType by remember { mutableStateOf(MediaType.VIDEO) }
-    var quality by remember { mutableStateOf("1080p") }
-    var container by remember { mutableStateOf("mp4") }
-    var bitrate by remember { mutableStateOf(320) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("New Download Profile", color = ElegantTextPrimary, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Profile Name") },
-                    placeholder = { Text("e.g. High Quality Audio") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = mediaType == MediaType.VIDEO,
-                        onClick = {
-                            mediaType = MediaType.VIDEO
-                            container = "mp4"
-                        },
-                        label = { Text("Video") }
-                    )
-                    FilterChip(
-                        selected = mediaType == MediaType.AUDIO,
-                        onClick = {
-                            mediaType = MediaType.AUDIO
-                            container = "mp3"
-                        },
-                        label = { Text("Audio Only") }
-                    )
-                }
-
-                if (mediaType == MediaType.VIDEO) {
-                    Text("Target Resolution:", fontSize = 12.sp, color = ElegantTextSecondary)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("2160p", "1080p", "720p", "480p").forEach { res ->
-                            FilterChip(
-                                selected = quality == res,
-                                onClick = { quality = res },
-                                label = { Text(res, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                } else {
-                    Text("Audio Bitrate:", fontSize = 12.sp, color = ElegantTextSecondary)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(320, 256, 192, 128).forEach { rate ->
-                            FilterChip(
-                                selected = bitrate == rate,
-                                onClick = { bitrate = rate },
-                                label = { Text("${rate}k", fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onSave(
-                            DownloadProfile(
-                                id = UUID.randomUUID().toString(),
-                                name = name.trim(),
-                                description = "Custom user preset",
-                                mediaType = mediaType,
-                                videoQuality = quality,
-                                container = container,
-                                audioBitrate = bitrate,
-                                isPreset = false
-                            )
-                        )
-                    }
-                },
-                enabled = name.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = ElegantLavenderPrimary, contentColor = ElegantLavenderOnPrimary)
-            ) {
-                Text("Save Profile")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = ElegantTextSecondary)
-            }
-        }
-    )
 }
 
 @Composable

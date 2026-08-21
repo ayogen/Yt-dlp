@@ -358,8 +358,8 @@ fun MediaAnalysisBottomSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Tab Selector only for standard Video / Audio / Playlist (Not single Image or Carousel)
-            if (!metadata.isImage && !metadata.isCarousel) {
+            // Tab Selector only for standard Video / Audio / Playlist (Not single Image, Carousel, or pure Audio)
+            if (!metadata.isImage && !metadata.isCarousel && !metadata.isAudioOnly && metadata.mediaType != MediaType.AUDIO) {
                 SecondaryTabRow(
                     selectedTabIndex = when (selectedMediaType) {
                         MediaType.VIDEO -> 0

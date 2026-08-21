@@ -23,7 +23,11 @@ enum class OutputContainer(val ext: String) {
     AUTO("auto"),
     MP4("mp4"),
     MKV("mkv"),
-    WEBM("webm");
+    WEBM("webm"),
+    JPG("jpg"),
+    PNG("png"),
+    WEBP("webp"),
+    GIF("gif");
 
     companion object {
         fun fromExt(ext: String): OutputContainer {
