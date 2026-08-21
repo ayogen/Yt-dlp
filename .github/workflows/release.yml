@@ -1,0 +1,128 @@
+name: Publish Android Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Publish Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup debug keystore
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > "$GITHUB_WORKSPACE/debug.keystore"
+          fi
+          if [ ! -f "$GITHUB_WORKSPACE/debug.keystore" ]; then
+            keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "Debug keystore verified at $GITHUB_WORKSPACE/debug.keystore"
+          ls -lh "$GITHUB_WORKSPACE/debug.keystore"
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Build Android APK
+        env:
+          GRADLE_OPTS: "-Djava.awt.headless=true -Xmx4096m"
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew :app:assembleDebug --stacktrace
+          else
+            gradle :app:assembleDebug --stacktrace
+          fi
+
+      - name: Locate and Prepare Release APK
+        id: prepare_apk
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [ -z "$TAG_NAME" ]; then
+            TAG_NAME=$(echo "${GITHUB_REF}" | sed -e 's,.*/\(.*\),\1,')
+          fi
+
+          echo "Pushed Tag: ${TAG_NAME}"
+
+          # Search for candidate APKs in build outputs
+          APK_SOURCE=""
+          if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
+            APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
+          elif [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
+          else
+            # Fallback search for any generated APK
+            APK_SOURCE=$(find app/build/outputs/apk -name "*.apk" -type f | head -n 1)
+          fi
+
+          if [ -z "$APK_SOURCE" ] || [ ! -f "$APK_SOURCE" ]; then
+            echo "::error::No generated APK found in app/build/outputs/apk/"
+            exit 1
+          fi
+
+          APK_SIZE=$(stat -c%s "$APK_SOURCE" 2>/dev/null || stat -f%z "$APK_SOURCE" 2>/dev/null || echo "0")
+          if [ "$APK_SIZE" -le 0 ]; then
+            echo "::error::Generated APK at $APK_SOURCE is empty (0 bytes)"
+            exit 1
+          fi
+
+          TARGET_APK="Transcode-${TAG_NAME}.apk"
+          cp "$APK_SOURCE" "$TARGET_APK"
+
+          echo "Original APK: $APK_SOURCE (${APK_SIZE} bytes)"
+          echo "Release APK: $TARGET_APK"
+          ls -lh "$TARGET_APK"
+          sha256sum "$TARGET_APK" > "${TARGET_APK}.sha256"
+
+          echo "apk_path=$TARGET_APK" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Transcode ${{ steps.prepare_apk.outputs.tag_name }}
+          tag_name: ${{ steps.prepare_apk.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.prepare_apk.outputs.apk_path }}
+          body: |
+            ## Transcode Android Application - ${{ steps.prepare_apk.outputs.tag_name }}
+
+            ### 📦 Download
+            - **APK Asset:** `${{ steps.prepare_apk.outputs.apk_path }}`
+            - **Distribution:** Standalone Android Application Package
+
+            ### ✨ Highlights & Features
+            - **Core yt-dlp Extractor:** Integrated Android Python runtime with automatic verification and stable yt-dlp release updates.
+            - **FFmpeg Processing Engine:** Embedded FFmpeg runtime for audio/video muxing, stream conversion, and container formatting.
+            - **Multi-Platform Downloader:** Fast, reliable extraction for YouTube, Facebook, Instagram, TikTok, and supported media platforms.
+            - **Scoped Storage & SAF:** Persistent download directory selection using Android Storage Access Framework with permission retention across process death.
+            - **Real-Time Engine Diagnostics:** In-app runtime verification, connection checks, and clean reinstallation controls.
+
+            ### ⚙️ Build Specifications
+            - **yt-dlp Engine:** 2026.08.19 (Verified runtime)
+            - **youtubedl-android:** 0.17.4 with FFmpeg integration
+            - **Target Platform:** Android 16 (API 36) / Minimum Android 7.0 (API 24)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
