@@ -36,6 +36,7 @@ import com.example.engine.YtDlpBinaryManager
 import com.example.engine.YtDlpStatus
 import com.example.engine.YtDlpVersionInfo
 import com.example.utils.UrlDetector
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
