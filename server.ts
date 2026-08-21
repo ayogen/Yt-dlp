@@ -23,7 +23,7 @@ async function startServer() {
       logId: 1,
       level: 'INFO',
       tag: 'YtDlpEngine',
-      message: 'yt-dlp Core Extractor initialized successfully (v2025.02.19)',
+      message: 'yt-dlp Core Extractor initialized successfully (v2026.08.19)',
       timestamp: Date.now() - 60000,
     },
     {
@@ -65,7 +65,7 @@ async function startServer() {
     res.json({
       ytdlp: {
         isReady: true,
-        version: '2025.02.19',
+        version: '2026.08.19',
         state: 'Ready',
       },
       ffmpeg: {

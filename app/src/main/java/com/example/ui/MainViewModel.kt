@@ -303,21 +303,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _updateCheckMessage.value = null
             try {
                 AppLogger.i("MainViewModel", "Checking for engine updates...")
-                val checkResult = YtDlpBinaryManager.checkForUpdates(getApplication())
-                if (checkResult.isSuccess) {
-                    val info = checkResult.getOrThrow()
-                    _versionInfo.value = info
-                    if (info.isUpdateAvailable) {
-                        _updateCheckMessage.value = "Update available: ${info.latestVersion} (Current: ${info.currentVersion})"
-                        _toastMessage.value = "New yt-dlp version available: ${info.latestVersion}"
+                val currentVer = _ytdlpStatus.value?.version ?: "Active"
+                val updateResult = YtDlpBinaryManager.updateYoutubeDlp(getApplication())
+                if (updateResult.isSuccess) {
+                    val verifiedVer = updateResult.getOrThrow()
+                    if (verifiedVer == currentVer) {
+                        _updateCheckMessage.value = "✓ Already up to date: $verifiedVer"
+                        _toastMessage.value = "Already up to date: $verifiedVer"
                     } else {
-                        _updateCheckMessage.value = "✓ yt-dlp is up to date (${info.currentVersion})"
-                        _toastMessage.value = "yt-dlp is up to date (${info.currentVersion})"
+                        _updateCheckMessage.value = "✓ yt-dlp updated: $currentVer → $verifiedVer"
+                        _toastMessage.value = "yt-dlp updated to $verifiedVer"
                     }
                     refreshDiagnostics()
                 } else {
-                    val ex = checkResult.exceptionOrNull()
-                    val currentVer = _ytdlpStatus.value?.version ?: "Active"
+                    val ex = updateResult.exceptionOrNull()
                     val errorMsg = ex?.message ?: "Could not connect to update server"
                     AppLogger.w("MainViewModel", "Update check notice: $errorMsg")
                     _updateCheckMessage.value = "Could not check for updates (Offline). Current: $currentVer"
@@ -326,7 +325,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 val errorMsg = e.message ?: e.javaClass.simpleName
                 AppLogger.e("MainViewModel", "Failed to check for updates: $errorMsg")
-                _updateCheckMessage.value = "Check failed: $errorMsg"
+                val currentVer = _ytdlpStatus.value?.version ?: "Active"
+                _updateCheckMessage.value = "Check failed: $errorMsg. Current: $currentVer"
                 _toastMessage.value = "Check failed: $errorMsg"
             } finally {
                 _isCheckingUpdates.value = false

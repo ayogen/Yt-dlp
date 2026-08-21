@@ -157,7 +157,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [ytdlpStatus, setYtdlpStatus] = useState<YtDlpStatus>({
     isReady: true,
-    version: '2025.02.19',
+    version: '2026.08.19',
     state: EngineState.READY,
   });
   const [ffmpegStatus, setFfmpegStatus] = useState<FFmpegStatus>({
@@ -303,7 +303,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setYtdlpStatus({
       isReady: true,
-      version: '2025.02.19',
+      version: '2026.08.19',
       state: EngineState.READY,
     });
     setIsUpdatingYtDlp(false);
