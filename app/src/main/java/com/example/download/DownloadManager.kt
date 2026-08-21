@@ -203,7 +203,7 @@ class DownloadManager(
                         imageUrl = task.url,
                         suggestedTitle = task.title,
                         customExt = task.targetContainer.ifBlank { null },
-                        safTreeUri = _settingsFlow.value.safTreeUri.ifBlank { null },
+                        safTreeUri = _settingsFlow.value.downloadLocationUri.ifBlank { null },
                         isCancelled = { cancelledFlags[task.id] == true },
                         isPaused = { pausedFlags[task.id] == true },
                         onProgress = { progress, downloaded, total, speed, eta ->

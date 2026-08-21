@@ -35,6 +35,16 @@ data class MediaMetadata(
     val isAudioOnly: Boolean
         get() = mediaType == MediaType.AUDIO || extractorName.equals("soundcloud", ignoreCase = true)
 
+    val displayFileSize: String
+        get() {
+            val bytes = fileSize
+            return if (bytes != null && bytes > 0) {
+                formatBytes(bytes)
+            } else {
+                "Original HD"
+            }
+        }
+
     val durationFormatted: String
         get() {
             if (durationSeconds <= 0) return "--:--"

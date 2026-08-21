@@ -29,15 +29,13 @@ class YtDlpEngine(private val context: Context) {
         YtDlpBinaryManager.ensureInitialized(context)
 
         val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
-        val userAgent = if (settings.customUserAgent.isNotBlank()) settings.customUserAgent else null
-        val proxyUrl = if (settings.proxyUrl.isNotBlank()) settings.proxyUrl else null
 
         extractionEngine.extractMedia(
             url = resolvedUrl,
             cookiesFile = cookiesFile,
-            userAgent = userAgent,
-            proxyUrl = proxyUrl,
-            geoBypass = settings.geoBypass
+            userAgent = null,
+            proxyUrl = null,
+            geoBypass = true
         )
     }
 

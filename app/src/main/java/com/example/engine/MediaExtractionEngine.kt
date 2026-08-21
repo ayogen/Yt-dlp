@@ -118,13 +118,24 @@ class MediaExtractionEngine(private val context: Context) {
         }
 
         // 3. yt-dlp Engine Extraction
+        val binary = YtDlpBinaryManager.getBinaryFile(context)
+        val binaryPath = binary?.absolutePath ?: "yt-dlp"
+        val customArgsBuilder = StringBuilder()
+        if (!userAgent.isNullOrBlank()) {
+            customArgsBuilder.append("--user-agent \"$userAgent\" ")
+        }
+        if (!proxyUrl.isNullOrBlank()) {
+            customArgsBuilder.append("--proxy $proxyUrl ")
+        }
+        if (geoBypass) {
+            customArgsBuilder.append("--geo-bypass ")
+        }
+
         val ytDlpResult = YtDlpProcessRunner.extractMetadataCli(
-            context = context,
+            binaryPath = binaryPath,
             url = canonicalUrl,
-            cookiesFile = cookiesFile,
-            userAgent = userAgent,
-            proxyUrl = proxyUrl,
-            geoBypass = geoBypass
+            cookiesPath = cookiesFile?.absolutePath,
+            customArgs = customArgsBuilder.toString().trim()
         )
 
         if (ytDlpResult.isSuccess) {
@@ -153,7 +164,7 @@ class MediaExtractionEngine(private val context: Context) {
             return@withContext Result.success(pageMediaFallback.toMediaMetadata())
         }
 
-        val embeddedResult = EmbeddedExtractorEngine.extractDirectStream(canonicalUrl)
+        val embeddedResult = EmbeddedExtractorEngine.analyzeUrl(canonicalUrl)
         if (embeddedResult.isSuccess) {
             return@withContext embeddedResult
         }
