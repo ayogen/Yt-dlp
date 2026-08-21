@@ -44,7 +44,7 @@ jobs:
       - name: Build Debug APK
         env:
           GRADLE_OPTS: "-Djava.awt.headless=true -Xmx4096m"
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --stacktrace --no-configuration-cache
 
       - name: Verify APK generation
         run: |
