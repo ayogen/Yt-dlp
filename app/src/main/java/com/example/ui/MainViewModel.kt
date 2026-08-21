@@ -525,6 +525,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         qualityLabel: String = "Best"
     ) {
         viewModelScope.launch {
+            val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
+
             if (metadata.isPlaylist && selectedPlaylistIndices.isNotEmpty()) {
                 val totalSelected = selectedPlaylistIndices.size
                 var idx = 1
@@ -532,20 +534,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 selectedPlaylistIndices.sorted().forEach { itemIndex ->
                     val entry = metadata.playlistEntries.getOrNull(itemIndex)
                     if (entry != null) {
+                        val formatDesc = if (effectiveMediaType == MediaType.AUDIO) {
+                            "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
+                        } else {
+                            "${selectedFormat?.displayResolution ?: qualityLabel} (${targetContainer.ext.uppercase()})"
+                        }
+
                         val task = DownloadTaskEntity(
                             id = UUID.randomUUID().toString(),
                             url = entry.url,
                             title = entry.title,
                             thumbnail = entry.thumbnail.ifBlank { metadata.thumbnail },
                             status = DownloadStatus.QUEUED,
-                            formatId = selectedFormat?.formatId ?: "best",
-                            formatDescription = selectedFormat?.displayResolution ?: "Best",
-                            qualityLabel = qualityLabel,
-                            mediaType = mediaType,
+                            formatId = if (effectiveMediaType == MediaType.AUDIO) "bestaudio/best" else (selectedFormat?.formatId ?: "best"),
+                            formatDescription = formatDesc,
+                            qualityLabel = if (effectiveMediaType == MediaType.AUDIO) "Audio ${audioBitrate ?: 320}k" else qualityLabel,
+                            mediaType = effectiveMediaType,
                             isPlaylist = true,
                             playlistIndex = idx,
                             playlistTotal = totalSelected,
-                            audioBitrate = audioBitrate,
+                            audioBitrate = if (effectiveMediaType == MediaType.AUDIO) audioBitrate else null,
                             targetContainer = targetContainer.ext,
                             embedSubs = embedSubs,
                             embedThumbnail = embedThumbnail
@@ -556,10 +564,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (tasksToEnqueue.isNotEmpty()) {
                     repository.startOrEnqueueDownloads(tasksToEnqueue)
-                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} playlist items"
+                    val modeLabel = if (effectiveMediaType == MediaType.AUDIO) "audio" else "video"
+                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} playlist $modeLabel items"
                 }
             } else {
-                val formatDesc = if (mediaType == MediaType.AUDIO) {
+                val formatDesc = if (effectiveMediaType == MediaType.AUDIO) {
                     "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
                 } else {
                     "${selectedFormat?.displayResolution ?: qualityLabel} (${targetContainer.ext.uppercase()})"
@@ -571,12 +580,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     title = metadata.title,
                     thumbnail = metadata.thumbnail,
                     status = DownloadStatus.QUEUED,
-                    formatId = selectedFormat?.formatId ?: "best",
+                    formatId = if (effectiveMediaType == MediaType.AUDIO) "bestaudio/best" else (selectedFormat?.formatId ?: "best"),
                     formatDescription = formatDesc,
-                    qualityLabel = qualityLabel,
+                    qualityLabel = if (effectiveMediaType == MediaType.AUDIO) "Audio ${audioBitrate ?: 320}k" else qualityLabel,
                     totalBytes = selectedFormat?.filesize ?: selectedFormat?.filesizeApprox ?: 0L,
-                    mediaType = mediaType,
-                    audioBitrate = audioBitrate,
+                    mediaType = effectiveMediaType,
+                    audioBitrate = if (effectiveMediaType == MediaType.AUDIO) audioBitrate else null,
                     targetContainer = targetContainer.ext,
                     embedSubs = embedSubs,
                     embedThumbnail = embedThumbnail

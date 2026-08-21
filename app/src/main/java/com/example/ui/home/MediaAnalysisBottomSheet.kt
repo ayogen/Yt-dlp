@@ -108,6 +108,8 @@ fun MediaAnalysisBottomSheet(
         mutableStateOf(if (metadata.isPlaylist) MediaType.PLAYLIST else MediaType.VIDEO)
     }
 
+    var playlistTargetType by remember { mutableStateOf(MediaType.VIDEO) }
+
     val deduplicatedVideoFormats = remember(metadata.formats) {
         deduplicateVideoFormats(metadata.formats)
     }
@@ -262,7 +264,14 @@ fun MediaAnalysisBottomSheet(
                                     Text(text = "FORMAT", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = ElegantTextTertiary, letterSpacing = 1.sp)
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        text = if (selectedMediaType == MediaType.AUDIO) selectedAudioFormat.displayName else selectedContainer.ext.uppercase(),
+                                        text = when {
+                                            selectedMediaType == MediaType.AUDIO -> selectedAudioFormat.displayName
+                                            selectedMediaType == MediaType.PLAYLIST -> {
+                                                if (playlistTargetType == MediaType.AUDIO) "Audio (${selectedAudioFormat.displayName})"
+                                                else "Video (${selectedContainer.ext.uppercase()})"
+                                            }
+                                            else -> selectedContainer.ext.uppercase()
+                                        },
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = ElegantLavenderPrimary
@@ -440,7 +449,7 @@ fun MediaAnalysisBottomSheet(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        listOf(AudioFormat.MP3, AudioFormat.M4A, AudioFormat.OPUS, AudioFormat.FLAC).forEach { fmt ->
+                        listOf(AudioFormat.MP3, AudioFormat.M4A, AudioFormat.OPUS, AudioFormat.FLAC, AudioFormat.WAV).forEach { fmt ->
                             FilterChip(
                                 selected = selectedAudioFormat == fmt,
                                 onClick = { selectedAudioFormat = fmt },
@@ -482,6 +491,140 @@ fun MediaAnalysisBottomSheet(
                 }
 
                 MediaType.PLAYLIST -> {
+                    // Playlist Download Type Selector
+                    Text(
+                        text = "Playlist Download Type",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ElegantTextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FilterChip(
+                            selected = playlistTargetType == MediaType.VIDEO,
+                            onClick = { playlistTargetType = MediaType.VIDEO },
+                            label = { Text("Video", fontWeight = FontWeight.Bold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Videocam,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ElegantLavenderPrimary,
+                                selectedLabelColor = ElegantLavenderOnPrimary,
+                                containerColor = ElegantDarkCard,
+                                labelColor = ElegantTextPrimary
+                            )
+                        )
+
+                        FilterChip(
+                            selected = playlistTargetType == MediaType.AUDIO,
+                            onClick = { playlistTargetType = MediaType.AUDIO },
+                            label = { Text("Audio", fontWeight = FontWeight.Bold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Audiotrack,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ElegantLavenderPrimary,
+                                selectedLabelColor = ElegantLavenderOnPrimary,
+                                containerColor = ElegantDarkCard,
+                                labelColor = ElegantTextPrimary
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Secondary controls based on playlistTargetType
+                    if (playlistTargetType == MediaType.VIDEO) {
+                        Text(
+                            text = "Video Container",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ElegantTextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(OutputContainer.MP4, OutputContainer.MKV, OutputContainer.WEBM).forEach { container ->
+                                FilterChip(
+                                    selected = selectedContainer == container,
+                                    onClick = { selectedContainer = container },
+                                    label = { Text(container.ext.uppercase(), fontWeight = FontWeight.SemiBold) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ElegantLavenderPrimary,
+                                        selectedLabelColor = ElegantLavenderOnPrimary,
+                                        containerColor = ElegantDarkCard,
+                                        labelColor = ElegantTextPrimary
+                                    )
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Audio Format",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ElegantTextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            listOf(AudioFormat.MP3, AudioFormat.M4A, AudioFormat.OPUS, AudioFormat.FLAC, AudioFormat.WAV).forEach { fmt ->
+                                FilterChip(
+                                    selected = selectedAudioFormat == fmt,
+                                    onClick = { selectedAudioFormat = fmt },
+                                    label = { Text(fmt.displayName, fontWeight = FontWeight.SemiBold) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ElegantLavenderPrimary,
+                                        selectedLabelColor = ElegantLavenderOnPrimary,
+                                        containerColor = ElegantDarkCard,
+                                        labelColor = ElegantTextPrimary
+                                    )
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text(
+                            text = "Audio Bitrate",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ElegantTextPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(320 to "320 kbps (High)", 256 to "256 kbps", 192 to "192 kbps", 128 to "128 kbps").forEach { (rate, label) ->
+                                FilterChip(
+                                    selected = selectedAudioBitrate == rate,
+                                    onClick = { selectedAudioBitrate = rate },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ElegantLavenderPrimary,
+                                        selectedLabelColor = ElegantLavenderOnPrimary,
+                                        containerColor = ElegantDarkCard,
+                                        labelColor = ElegantTextPrimary
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -637,16 +780,23 @@ fun MediaAnalysisBottomSheet(
                 // DOWNLOAD NOW Button
                 Button(
                     onClick = {
-                        val container = if (selectedMediaType == MediaType.AUDIO) {
+                        val targetMediaType = if (selectedMediaType == MediaType.PLAYLIST) {
+                            playlistTargetType
+                        } else {
+                            selectedMediaType
+                        }
+
+                        val container = if (targetMediaType == MediaType.AUDIO) {
                             OutputContainer.fromExt(selectedAudioFormat.ext)
                         } else {
                             selectedContainer
                         }
+
                         onDownload(
                             selectedFormat,
-                            selectedMediaType,
+                            targetMediaType,
                             container,
-                            if (selectedMediaType == MediaType.AUDIO) selectedAudioBitrate else null,
+                            if (targetMediaType == MediaType.AUDIO) selectedAudioBitrate else null,
                             embedSubtitles,
                             embedThumbnail,
                             selectedPlaylistItems.value
