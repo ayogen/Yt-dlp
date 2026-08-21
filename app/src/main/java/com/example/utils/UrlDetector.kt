@@ -9,7 +9,8 @@ object UrlDetector {
     )
 
     private val DIRECT_EXTENSIONS = listOf(
-        ".mp4", ".m3u8", ".mp3", ".m4a", ".webm", ".flv", ".mov", ".wav", ".aac", ".ogg", ".ts"
+        ".mp4", ".m3u8", ".mp3", ".m4a", ".webm", ".flv", ".mov", ".wav", ".aac", ".ogg", ".ts",
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".heic", ".heif", ".svg"
     )
 
     fun isPotentialMediaUrl(text: String?): Boolean {

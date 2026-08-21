@@ -14,7 +14,9 @@ enum class DownloadStatus(val displayName: String) {
 enum class MediaType(val displayName: String) {
     VIDEO("Video"),
     AUDIO("Audio"),
-    PLAYLIST("Playlist")
+    PLAYLIST("Playlist"),
+    IMAGE("Image"),
+    CAROUSEL("Carousel")
 }
 
 enum class OutputContainer(val ext: String) {

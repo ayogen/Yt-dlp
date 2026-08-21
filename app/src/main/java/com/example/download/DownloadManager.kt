@@ -197,44 +197,90 @@ class DownloadManager(
                 downloadDao.updateTaskStatus(task.id, DownloadStatus.DOWNLOADING)
                 AppLogger.i("DownloadManager", "Started active download: ${task.title} (Attempt: ${task.retryAttempt + 1})", task.id)
 
-                val result = engine.executeDownload(
-                    task = task,
-                    settings = _settingsFlow.value,
-                    onProgress = { progress, downloaded, total, speed, eta ->
-                        val now = System.currentTimeMillis()
-                        val lastTime = lastProgressUpdate[task.id] ?: 0L
-                        val isPaused = pausedFlags[task.id] == true
-                        if (now - lastTime >= 250L || progress >= 100f || isPaused) {
-                            lastProgressUpdate[task.id] = now
-                            scope.launch {
-                                val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
-                                downloadDao.updateTaskProgress(
-                                    id = task.id,
-                                    progress = progress,
-                                    downloadedBytes = downloaded,
-                                    totalBytes = total,
-                                    speed = if (isPaused) 0.0 else speed,
-                                    eta = if (isPaused) 0L else eta,
-                                    status = currentStatus
-                                )
+                val result = if (task.mediaType == MediaType.IMAGE) {
+                    ImageDownloader.downloadImage(
+                        context = context,
+                        imageUrl = task.url,
+                        suggestedTitle = task.title,
+                        customExt = task.targetContainer.ifBlank { null },
+                        safTreeUri = _settingsFlow.value.safTreeUri.ifBlank { null },
+                        isCancelled = { cancelledFlags[task.id] == true },
+                        isPaused = { pausedFlags[task.id] == true },
+                        onProgress = { progress, downloaded, total, speed, eta ->
+                            val now = System.currentTimeMillis()
+                            val lastTime = lastProgressUpdate[task.id] ?: 0L
+                            val isPaused = pausedFlags[task.id] == true
+                            if (now - lastTime >= 250L || progress >= 100f || isPaused) {
+                                lastProgressUpdate[task.id] = now
+                                scope.launch {
+                                    val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
+                                    downloadDao.updateTaskProgress(
+                                        id = task.id,
+                                        progress = progress,
+                                        downloadedBytes = downloaded,
+                                        totalBytes = total,
+                                        speed = if (isPaused) 0.0 else speed,
+                                        eta = if (isPaused) 0L else eta,
+                                        status = currentStatus
+                                    )
 
-                                // Update Foreground Notification
-                                DownloadForegroundService.updateProgress(
-                                    context = context,
-                                    taskId = task.id,
-                                    title = task.title,
-                                    progress = progress,
-                                    downloaded = downloaded,
-                                    total = total,
-                                    speed = if (isPaused) 0.0 else speed,
-                                    activeCount = activeDownloadCount.get()
-                                )
+                                    DownloadForegroundService.updateProgress(
+                                        context = context,
+                                        taskId = task.id,
+                                        title = task.title,
+                                        progress = progress,
+                                        downloaded = downloaded,
+                                        total = total,
+                                        speed = if (isPaused) 0.0 else speed,
+                                        activeCount = activeDownloadCount.get()
+                                    )
+                                }
                             }
+                        },
+                        onLog = { msg ->
+                            AppLogger.d("DownloadManager", "[Image] $msg", task.id)
                         }
-                    },
-                    isCancelled = { cancelledFlags[task.id] == true },
-                    isPaused = { pausedFlags[task.id] == true }
-                )
+                    ).map { it.finalPathOrSafUri }
+                } else {
+                    engine.executeDownload(
+                        task = task,
+                        settings = _settingsFlow.value,
+                        onProgress = { progress, downloaded, total, speed, eta ->
+                            val now = System.currentTimeMillis()
+                            val lastTime = lastProgressUpdate[task.id] ?: 0L
+                            val isPaused = pausedFlags[task.id] == true
+                            if (now - lastTime >= 250L || progress >= 100f || isPaused) {
+                                lastProgressUpdate[task.id] = now
+                                scope.launch {
+                                    val currentStatus = if (isPaused) DownloadStatus.PAUSED else DownloadStatus.DOWNLOADING
+                                    downloadDao.updateTaskProgress(
+                                        id = task.id,
+                                        progress = progress,
+                                        downloadedBytes = downloaded,
+                                        totalBytes = total,
+                                        speed = if (isPaused) 0.0 else speed,
+                                        eta = if (isPaused) 0L else eta,
+                                        status = currentStatus
+                                    )
+
+                                    // Update Foreground Notification
+                                    DownloadForegroundService.updateProgress(
+                                        context = context,
+                                        taskId = task.id,
+                                        title = task.title,
+                                        progress = progress,
+                                        downloaded = downloaded,
+                                        total = total,
+                                        speed = if (isPaused) 0.0 else speed,
+                                        activeCount = activeDownloadCount.get()
+                                    )
+                                }
+                            }
+                        },
+                        isCancelled = { cancelledFlags[task.id] == true },
+                        isPaused = { pausedFlags[task.id] == true }
+                    )
+                }
 
                 if (result.isSuccess) {
                     val finalPath = result.getOrNull() ?: task.outputPath

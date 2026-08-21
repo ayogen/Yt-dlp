@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FeaturedPlayList
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -74,13 +76,10 @@ import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
 import com.example.ui.components.MediaTypeBadge
 import com.example.ui.theme.ElegantAmber
-import com.example.ui.theme.ElegantDarkBackground
 import com.example.ui.theme.ElegantDarkBorder
-import com.example.ui.theme.ElegantDarkBorderSubtle
 import com.example.ui.theme.ElegantDarkCard
 import com.example.ui.theme.ElegantDarkSurface
 import com.example.ui.theme.ElegantDarkSurfaceVariant
-import com.example.ui.theme.ElegantGreen
 import com.example.ui.theme.ElegantLavenderOnPrimary
 import com.example.ui.theme.ElegantLavenderPrimary
 import com.example.ui.theme.ElegantTextPrimary
@@ -104,10 +103,17 @@ fun MediaAnalysisBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    var selectedMediaType by remember {
-        mutableStateOf(if (metadata.isPlaylist) MediaType.PLAYLIST else MediaType.VIDEO)
+    val initialMediaType = remember(metadata) {
+        when {
+            metadata.isCarousel -> MediaType.CAROUSEL
+            metadata.isPlaylist -> MediaType.PLAYLIST
+            metadata.isImage -> MediaType.IMAGE
+            metadata.mediaType == MediaType.AUDIO -> MediaType.AUDIO
+            else -> MediaType.VIDEO
+        }
     }
 
+    var selectedMediaType by remember(metadata) { mutableStateOf(initialMediaType) }
     var playlistTargetType by remember { mutableStateOf(MediaType.VIDEO) }
 
     val deduplicatedVideoFormats = remember(metadata.formats) {
@@ -122,15 +128,21 @@ fun MediaAnalysisBottomSheet(
         )
     }
 
-    var selectedContainer by remember { mutableStateOf(OutputContainer.MP4) }
+    var selectedContainer by remember {
+        mutableStateOf(if (metadata.isImage) OutputContainer.JPG else OutputContainer.MP4)
+    }
     var selectedAudioFormat by remember { mutableStateOf(AudioFormat.MP3) }
     var selectedAudioBitrate by remember { mutableStateOf(320) }
 
     var embedSubtitles by remember { mutableStateOf(false) }
     var embedThumbnail by remember { mutableStateOf(true) }
 
-    val selectedPlaylistItems = remember {
+    val selectedPlaylistItems = remember(metadata) {
         mutableStateOf(metadata.playlistEntries.indices.toMutableSet())
+    }
+
+    val selectedCarouselItems = remember(metadata) {
+        mutableStateOf(metadata.carouselItems.indices.toMutableSet())
     }
 
     ModalBottomSheet(
@@ -155,8 +167,15 @@ fun MediaAnalysisBottomSheet(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     MediaTypeBadge(mediaType = selectedMediaType)
                     Spacer(modifier = Modifier.width(8.dp))
+                    val headerTitle = when {
+                        metadata.isCarousel -> "Carousel Detected (${metadata.carouselItems.size} items)"
+                        metadata.isPlaylist -> "Playlist Detected"
+                        metadata.isImage -> "Image Detected"
+                        metadata.mediaType == MediaType.AUDIO -> "Audio Stream"
+                        else -> "Extracted Media"
+                    }
                     Text(
-                        text = if (metadata.isPlaylist) "Playlist Detected" else "Extracted Media",
+                        text = headerTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = ElegantTextPrimary
@@ -169,7 +188,7 @@ fun MediaAnalysisBottomSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Main Media Info Container (Aspect Ratio Preview)
+            // Main Media Info Container
             Card(
                 colors = CardDefaults.cardColors(containerColor = ElegantDarkCard),
                 shape = RoundedCornerShape(24.dp),
@@ -184,9 +203,12 @@ fun MediaAnalysisBottomSheet(
                             .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
                             .background(Color(0xFF141218))
                     ) {
-                        if (metadata.thumbnail.isNotBlank()) {
+                        val displayThumb = metadata.thumbnail.ifBlank {
+                            metadata.carouselItems.firstOrNull()?.thumbnail.orEmpty()
+                        }
+                        if (displayThumb.isNotBlank()) {
                             AsyncImage(
-                                model = metadata.thumbnail,
+                                model = displayThumb,
                                 contentDescription = metadata.title,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.matchParentSize()
@@ -245,8 +267,13 @@ fun MediaAnalysisBottomSheet(
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Text(text = "RESOLUTION", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = ElegantTextTertiary, letterSpacing = 1.sp)
                                     Spacer(modifier = Modifier.height(2.dp))
+                                    val resText = when {
+                                        metadata.isImage -> if (metadata.width != null && metadata.height != null) "${metadata.width}x${metadata.height}" else "Original HD"
+                                        metadata.isCarousel -> "${metadata.carouselItems.size} Media Items"
+                                        else -> selectedFormat?.displayResolution ?: "Best HD"
+                                    }
                                     Text(
-                                        text = selectedFormat?.displayResolution ?: "Best HD",
+                                        text = resText,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = ElegantLavenderPrimary
@@ -263,15 +290,18 @@ fun MediaAnalysisBottomSheet(
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Text(text = "FORMAT", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = ElegantTextTertiary, letterSpacing = 1.sp)
                                     Spacer(modifier = Modifier.height(2.dp))
+                                    val fmtText = when {
+                                        selectedMediaType == MediaType.IMAGE -> selectedContainer.ext.uppercase()
+                                        selectedMediaType == MediaType.CAROUSEL -> "Multi-Item Album"
+                                        selectedMediaType == MediaType.AUDIO -> selectedAudioFormat.displayName
+                                        selectedMediaType == MediaType.PLAYLIST -> {
+                                            if (playlistTargetType == MediaType.AUDIO) "Audio (${selectedAudioFormat.displayName})"
+                                            else "Video (${selectedContainer.ext.uppercase()})"
+                                        }
+                                        else -> selectedContainer.ext.uppercase()
+                                    }
                                     Text(
-                                        text = when {
-                                            selectedMediaType == MediaType.AUDIO -> selectedAudioFormat.displayName
-                                            selectedMediaType == MediaType.PLAYLIST -> {
-                                                if (playlistTargetType == MediaType.AUDIO) "Audio (${selectedAudioFormat.displayName})"
-                                                else "Video (${selectedContainer.ext.uppercase()})"
-                                            }
-                                            else -> selectedContainer.ext.uppercase()
-                                        },
+                                        text = fmtText,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = ElegantLavenderPrimary
@@ -282,7 +312,7 @@ fun MediaAnalysisBottomSheet(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Estimated Size & FFmpeg Note
+                        // Estimated Size & Engine Note
                         Surface(
                             color = Color(0xFF1C1B1F).copy(alpha = 0.6f),
                             shape = RoundedCornerShape(12.dp),
@@ -297,16 +327,26 @@ fun MediaAnalysisBottomSheet(
                                     color = ElegantTextSecondary,
                                     fontSize = 11.sp
                                 )
+                                val sizeText = when {
+                                    metadata.isImage -> metadata.displayFileSize
+                                    metadata.isCarousel -> "${metadata.carouselItems.size} items"
+                                    else -> selectedFormat?.displayFileSize ?: "Auto Stream"
+                                }
                                 Text(
-                                    text = selectedFormat?.displayFileSize ?: "Unknown size",
+                                    text = sizeText,
                                     color = ElegantLavenderPrimary,
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
+                                val engineNote = when {
+                                    metadata.isImage -> "• Direct Fast Stream"
+                                    metadata.isCarousel -> "• Batch Downloader"
+                                    else -> "• Universal Engine"
+                                }
                                 Text(
-                                    text = "• FFmpeg Stream Muxing",
+                                    text = engineNote,
                                     color = ElegantTextTertiary,
                                     fontSize = 11.sp
                                 )
@@ -318,42 +358,161 @@ fun MediaAnalysisBottomSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Tab Selector (Video / Audio / Playlist)
-            SecondaryTabRow(
-                selectedTabIndex = when (selectedMediaType) {
-                    MediaType.VIDEO -> 0
-                    MediaType.AUDIO -> 1
-                    MediaType.PLAYLIST -> 2
-                },
-                containerColor = ElegantDarkSurfaceVariant,
-                contentColor = ElegantLavenderPrimary
-            ) {
-                Tab(
-                    selected = selectedMediaType == MediaType.VIDEO,
-                    onClick = { selectedMediaType = MediaType.VIDEO },
-                    text = { Text("Video", fontWeight = FontWeight.Bold) },
-                    icon = { Icon(Icons.Default.Videocam, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                )
-                Tab(
-                    selected = selectedMediaType == MediaType.AUDIO,
-                    onClick = { selectedMediaType = MediaType.AUDIO },
-                    text = { Text("Audio Only", fontWeight = FontWeight.Bold) },
-                    icon = { Icon(Icons.Default.Audiotrack, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                )
-                if (metadata.isPlaylist) {
+            // Tab Selector only for standard Video / Audio / Playlist (Not single Image or Carousel)
+            if (!metadata.isImage && !metadata.isCarousel) {
+                SecondaryTabRow(
+                    selectedTabIndex = when (selectedMediaType) {
+                        MediaType.VIDEO -> 0
+                        MediaType.AUDIO -> 1
+                        MediaType.PLAYLIST -> 2
+                        else -> 0
+                    },
+                    containerColor = ElegantDarkSurfaceVariant,
+                    contentColor = ElegantLavenderPrimary
+                ) {
                     Tab(
-                        selected = selectedMediaType == MediaType.PLAYLIST,
-                        onClick = { selectedMediaType = MediaType.PLAYLIST },
-                        text = { Text("Playlist", fontWeight = FontWeight.Bold) },
-                        icon = { Icon(Icons.Default.FeaturedPlayList, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        selected = selectedMediaType == MediaType.VIDEO,
+                        onClick = { selectedMediaType = MediaType.VIDEO },
+                        text = { Text("Video", fontWeight = FontWeight.Bold) },
+                        icon = { Icon(Icons.Default.Videocam, contentDescription = null, modifier = Modifier.size(18.dp)) }
                     )
+                    Tab(
+                        selected = selectedMediaType == MediaType.AUDIO,
+                        onClick = { selectedMediaType = MediaType.AUDIO },
+                        text = { Text("Audio Only", fontWeight = FontWeight.Bold) },
+                        icon = { Icon(Icons.Default.Audiotrack, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    )
+                    if (metadata.isPlaylist) {
+                        Tab(
+                            selected = selectedMediaType == MediaType.PLAYLIST,
+                            onClick = { selectedMediaType = MediaType.PLAYLIST },
+                            text = { Text("Playlist", fontWeight = FontWeight.Bold) },
+                            icon = { Icon(Icons.Default.FeaturedPlayList, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        )
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Format Choices
             when (selectedMediaType) {
+                MediaType.IMAGE -> {
+                    Text(
+                        text = "Image Container Format",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ElegantTextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(OutputContainer.JPG, OutputContainer.PNG, OutputContainer.WEBM).forEach { container ->
+                            FilterChip(
+                                selected = selectedContainer == container,
+                                onClick = { selectedContainer = container },
+                                label = { Text(container.ext.uppercase(), fontWeight = FontWeight.SemiBold) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = ElegantLavenderPrimary,
+                                    selectedLabelColor = ElegantLavenderOnPrimary,
+                                    containerColor = ElegantDarkCard,
+                                    labelColor = ElegantTextPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                MediaType.CAROUSEL -> {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Carousel Items (${selectedCarouselItems.value.size} of ${metadata.carouselItems.size} selected)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = ElegantTextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        TextButton(onClick = {
+                            if (selectedCarouselItems.value.size == metadata.carouselItems.size) {
+                                selectedCarouselItems.value = mutableSetOf()
+                            } else {
+                                selectedCarouselItems.value = metadata.carouselItems.indices.toMutableSet()
+                            }
+                        }) {
+                            Text(
+                                text = if (selectedCarouselItems.value.size == metadata.carouselItems.size) "Deselect All" else "Select All",
+                                color = ElegantLavenderPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                    ) {
+                        itemsIndexed(metadata.carouselItems) { index, item ->
+                            val isSelected = selectedCarouselItems.value.contains(index)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        val current = selectedCarouselItems.value.toMutableSet()
+                                        if (isSelected) current.remove(index) else current.add(index)
+                                        selectedCarouselItems.value = current
+                                    }
+                                    .padding(vertical = 4.dp, horizontal = 6.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { checked ->
+                                        val current = selectedCarouselItems.value.toMutableSet()
+                                        if (checked) current.add(index) else current.remove(index)
+                                        selectedCarouselItems.value = current
+                                    },
+                                    colors = CheckboxDefaults.colors(checkedColor = ElegantLavenderPrimary)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                if (item.thumbnail.isNotBlank()) {
+                                    AsyncImage(
+                                        model = item.thumbnail,
+                                        contentDescription = item.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(ElegantDarkSurfaceVariant)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${index + 1}. ${item.title}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = ElegantTextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${item.mediaType.name} • ${if (item.width != null && item.height != null) "${item.width}x${item.height}" else "Original"}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ElegantTextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 MediaType.VIDEO -> {
                     Text(
                         text = "Available Video Formats",
@@ -491,7 +650,6 @@ fun MediaAnalysisBottomSheet(
                 }
 
                 MediaType.PLAYLIST -> {
-                    // Playlist Download Type Selector
                     Text(
                         text = "Playlist Download Type",
                         style = MaterialTheme.typography.labelLarge,
@@ -500,21 +658,11 @@ fun MediaAnalysisBottomSheet(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = playlistTargetType == MediaType.VIDEO,
                             onClick = { playlistTargetType = MediaType.VIDEO },
-                            label = { Text("Video", fontWeight = FontWeight.Bold) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Videocam,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
+                            label = { Text("Video (MP4)", fontWeight = FontWeight.SemiBold) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = ElegantLavenderPrimary,
                                 selectedLabelColor = ElegantLavenderOnPrimary,
@@ -522,18 +670,10 @@ fun MediaAnalysisBottomSheet(
                                 labelColor = ElegantTextPrimary
                             )
                         )
-
                         FilterChip(
                             selected = playlistTargetType == MediaType.AUDIO,
                             onClick = { playlistTargetType = MediaType.AUDIO },
-                            label = { Text("Audio", fontWeight = FontWeight.Bold) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Audiotrack,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
+                            label = { Text("Audio Only (MP3)", fontWeight = FontWeight.SemiBold) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = ElegantLavenderPrimary,
                                 selectedLabelColor = ElegantLavenderOnPrimary,
@@ -541,162 +681,84 @@ fun MediaAnalysisBottomSheet(
                                 labelColor = ElegantTextPrimary
                             )
                         )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Secondary controls based on playlistTargetType
-                    if (playlistTargetType == MediaType.VIDEO) {
-                        Text(
-                            text = "Video Container",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = ElegantTextPrimary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(OutputContainer.MP4, OutputContainer.MKV, OutputContainer.WEBM).forEach { container ->
-                                FilterChip(
-                                    selected = selectedContainer == container,
-                                    onClick = { selectedContainer = container },
-                                    label = { Text(container.ext.uppercase(), fontWeight = FontWeight.SemiBold) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ElegantLavenderPrimary,
-                                        selectedLabelColor = ElegantLavenderOnPrimary,
-                                        containerColor = ElegantDarkCard,
-                                        labelColor = ElegantTextPrimary
-                                    )
-                                )
-                            }
-                        }
-                    } else {
-                        Text(
-                            text = "Audio Format",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = ElegantTextPrimary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            listOf(AudioFormat.MP3, AudioFormat.M4A, AudioFormat.OPUS, AudioFormat.FLAC, AudioFormat.WAV).forEach { fmt ->
-                                FilterChip(
-                                    selected = selectedAudioFormat == fmt,
-                                    onClick = { selectedAudioFormat = fmt },
-                                    label = { Text(fmt.displayName, fontWeight = FontWeight.SemiBold) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ElegantLavenderPrimary,
-                                        selectedLabelColor = ElegantLavenderOnPrimary,
-                                        containerColor = ElegantDarkCard,
-                                        labelColor = ElegantTextPrimary
-                                    )
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Text(
-                            text = "Audio Bitrate",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = ElegantTextPrimary,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(320 to "320 kbps (High)", 256 to "256 kbps", 192 to "192 kbps", 128 to "128 kbps").forEach { (rate, label) ->
-                                FilterChip(
-                                    selected = selectedAudioBitrate == rate,
-                                    onClick = { selectedAudioBitrate = rate },
-                                    label = { Text(label, fontSize = 11.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ElegantLavenderPrimary,
-                                        selectedLabelColor = ElegantLavenderOnPrimary,
-                                        containerColor = ElegantDarkCard,
-                                        labelColor = ElegantTextPrimary
-                                    )
-                                )
-                            }
-                        }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Videos (${selectedPlaylistItems.value.size}/${metadata.playlistEntries.size})",
+                            text = "Playlist Items (${selectedPlaylistItems.value.size} of ${metadata.playlistEntries.size} selected)",
                             style = MaterialTheme.typography.labelLarge,
                             color = ElegantTextPrimary,
                             fontWeight = FontWeight.Bold
                         )
-                        Row {
-                            TextButton(onClick = {
-                                selectedPlaylistItems.value = metadata.playlistEntries.indices.toMutableSet()
-                            }) {
-                                Text("Select All", fontSize = 12.sp, color = ElegantLavenderPrimary)
-                            }
-                            TextButton(onClick = {
+                        TextButton(onClick = {
+                            if (selectedPlaylistItems.value.size == metadata.playlistEntries.size) {
                                 selectedPlaylistItems.value = mutableSetOf()
-                            }) {
-                                Text("Clear", fontSize = 12.sp, color = ElegantTextSecondary)
+                            } else {
+                                selectedPlaylistItems.value = metadata.playlistEntries.indices.toMutableSet()
                             }
+                        }) {
+                            Text(
+                                text = if (selectedPlaylistItems.value.size == metadata.playlistEntries.size) "Deselect All" else "Select All",
+                                color = ElegantLavenderPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 240.dp)
+                            .heightIn(max = 200.dp)
                     ) {
-                        itemsIndexed(metadata.playlistEntries, key = { index, entry -> entry.id.ifBlank { "$index" } }) { index, entry ->
-                            val isChecked = selectedPlaylistItems.value.contains(index)
+                        itemsIndexed(metadata.playlistEntries) { index, entry ->
+                            val isSelected = selectedPlaylistItems.value.contains(index)
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isChecked) ElegantDarkCard else Color.Transparent)
                                     .clickable {
-                                        val updated = selectedPlaylistItems.value.toMutableSet()
-                                        if (isChecked) updated.remove(index) else updated.add(index)
-                                        selectedPlaylistItems.value = updated
+                                        val current = selectedPlaylistItems.value.toMutableSet()
+                                        if (isSelected) current.remove(index) else current.add(index)
+                                        selectedPlaylistItems.value = current
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .padding(vertical = 4.dp, horizontal = 6.dp)
                             ) {
                                 Checkbox(
-                                    checked = isChecked,
+                                    checked = isSelected,
                                     onCheckedChange = { checked ->
-                                        val updated = selectedPlaylistItems.value.toMutableSet()
-                                        if (checked) updated.add(index) else updated.remove(index)
-                                        selectedPlaylistItems.value = updated
+                                        val current = selectedPlaylistItems.value.toMutableSet()
+                                        if (checked) current.add(index) else current.remove(index)
+                                        selectedPlaylistItems.value = current
                                     },
                                     colors = CheckboxDefaults.colors(checkedColor = ElegantLavenderPrimary)
                                 )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 if (entry.thumbnail.isNotBlank()) {
-                                    Spacer(modifier = Modifier.width(4.dp))
                                     AsyncImage(
                                         model = entry.thumbnail,
-                                        contentDescription = null,
+                                        contentDescription = entry.title,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
-                                            .size(40.dp, 26.dp)
-                                            .clip(RoundedCornerShape(4.dp))
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(6.dp))
                                             .background(ElegantDarkSurfaceVariant)
                                     )
+                                    Spacer(modifier = Modifier.width(10.dp))
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = entry.title,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        text = "${index + 1}. ${entry.title}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
                                         color = ElegantTextPrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -716,35 +778,37 @@ fun MediaAnalysisBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-            Divider(color = ElegantDarkBorder)
-            Spacer(modifier = Modifier.height(10.dp))
+            if (!metadata.isImage && !metadata.isCarousel) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Divider(color = ElegantDarkBorder)
+                Spacer(modifier = Modifier.height(10.dp))
 
-            // Subtitle & Thumbnail toggles
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(text = "Embed Subtitles", color = ElegantTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Switch(
-                    checked = embedSubtitles,
-                    onCheckedChange = { embedSubtitles = it },
-                    colors = SwitchDefaults.colors(checkedThumbColor = ElegantLavenderPrimary, checkedTrackColor = ElegantDarkSurfaceVariant)
-                )
-            }
+                // Subtitle & Thumbnail toggles
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "Embed Subtitles", color = ElegantTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Switch(
+                        checked = embedSubtitles,
+                        onCheckedChange = { embedSubtitles = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = ElegantLavenderPrimary, checkedTrackColor = ElegantDarkSurfaceVariant)
+                    )
+                }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(text = "Embed Thumbnail", color = ElegantTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Switch(
-                    checked = embedThumbnail,
-                    onCheckedChange = { embedThumbnail = it },
-                    colors = SwitchDefaults.colors(checkedThumbColor = ElegantLavenderPrimary, checkedTrackColor = ElegantDarkSurfaceVariant)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "Embed Thumbnail", color = ElegantTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Switch(
+                        checked = embedThumbnail,
+                        onCheckedChange = { embedThumbnail = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = ElegantLavenderPrimary, checkedTrackColor = ElegantDarkSurfaceVariant)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
@@ -755,41 +819,76 @@ fun MediaAnalysisBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // CC Badge
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(ElegantDarkSurfaceVariant)
-                ) {
-                    Text(text = "CC", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElegantTextPrimary)
+                if (selectedMediaType == MediaType.IMAGE) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(ElegantDarkSurfaceVariant)
+                    ) {
+                        Icon(imageVector = Icons.Default.Image, contentDescription = null, tint = ElegantTextPrimary, modifier = Modifier.size(20.dp))
+                    }
+                } else if (selectedMediaType == MediaType.CAROUSEL) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(ElegantDarkSurfaceVariant)
+                    ) {
+                        Icon(imageVector = Icons.Default.Layers, contentDescription = null, tint = ElegantTextPrimary, modifier = Modifier.size(20.dp))
+                    }
+                } else {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(ElegantDarkSurfaceVariant)
+                    ) {
+                        Text(text = "CC", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElegantTextPrimary)
+                    }
+
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(ElegantDarkSurfaceVariant)
+                    ) {
+                        Text(text = "HD", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElegantTextPrimary)
+                    }
                 }
 
-                // HD Badge
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(ElegantDarkSurfaceVariant)
-                ) {
-                    Text(text = "HD", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElegantTextPrimary)
+                val downloadButtonLabel = when {
+                    metadata.isCarousel -> "DOWNLOAD ${selectedCarouselItems.value.size} ITEMS"
+                    metadata.isPlaylist -> "DOWNLOAD ${selectedPlaylistItems.value.size} ITEMS"
+                    metadata.isImage -> "DOWNLOAD IMAGE"
+                    selectedMediaType == MediaType.AUDIO -> "DOWNLOAD AUDIO"
+                    else -> "DOWNLOAD NOW"
                 }
 
                 // DOWNLOAD NOW Button
                 Button(
                     onClick = {
-                        val targetMediaType = if (selectedMediaType == MediaType.PLAYLIST) {
-                            playlistTargetType
-                        } else {
-                            selectedMediaType
+                        val targetMediaType = when {
+                            metadata.isCarousel -> MediaType.CAROUSEL
+                            metadata.isPlaylist -> playlistTargetType
+                            metadata.isImage -> MediaType.IMAGE
+                            else -> selectedMediaType
                         }
 
-                        val container = if (targetMediaType == MediaType.AUDIO) {
-                            OutputContainer.fromExt(selectedAudioFormat.ext)
-                        } else {
-                            selectedContainer
+                        val container = when {
+                            targetMediaType == MediaType.IMAGE -> selectedContainer
+                            targetMediaType == MediaType.AUDIO -> OutputContainer.fromExt(selectedAudioFormat.ext)
+                            else -> selectedContainer
+                        }
+
+                        val selection = when {
+                            metadata.isCarousel -> selectedCarouselItems.value
+                            metadata.isPlaylist -> selectedPlaylistItems.value
+                            else -> emptySet()
                         }
 
                         onDownload(
@@ -799,7 +898,7 @@ fun MediaAnalysisBottomSheet(
                             if (targetMediaType == MediaType.AUDIO) selectedAudioBitrate else null,
                             embedSubtitles,
                             embedThumbnail,
-                            selectedPlaylistItems.value
+                            selection
                         )
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = ElegantLavenderPrimary, contentColor = ElegantLavenderOnPrimary),
@@ -812,7 +911,7 @@ fun MediaAnalysisBottomSheet(
                     Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "DOWNLOAD NOW",
+                        text = downloadButtonLabel,
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         letterSpacing = 0.5.sp
@@ -844,7 +943,6 @@ fun deduplicateVideoFormats(formats: List<FormatInfo>): List<FormatInfo> {
                 .thenBy { if (it.ext.lowercase() == "mp4") 1 else 0 }
         ) ?: list.first()
 
-        // Preserve filesize or filesizeApprox from other formats with the same resolution if chosen format has null
         val bestFilesize = chosen.filesize ?: list.firstNotNullOfOrNull { it.filesize }
         val bestFilesizeApprox = chosen.filesizeApprox ?: list.firstNotNullOfOrNull { it.filesizeApprox }
 

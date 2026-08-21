@@ -248,7 +248,39 @@ class ExampleRobolectricTest {
         assertEquals("Music", StorageUtils.getSubfolderForMediaType(MediaType.AUDIO, "flac"))
         assertEquals("Audio", StorageUtils.getSubfolderForMediaType(MediaType.AUDIO, "opus"))
         assertEquals("Subtitles", StorageUtils.getSubfolderForMediaType(MediaType.VIDEO, "vtt"))
+        assertEquals("Images", StorageUtils.getSubfolderForMediaType(MediaType.IMAGE, "jpg"))
+        assertEquals("Images", StorageUtils.getSubfolderForMediaType(MediaType.CAROUSEL, "png"))
         assertEquals("Images", StorageUtils.getSubfolderForMediaType(MediaType.VIDEO, "jpg"))
+    }
+
+    @Test
+    fun `test universal image and carousel metadata parsing`() {
+        val carouselMeta = com.example.data.model.MediaMetadata(
+            id = "pin_12345",
+            originalUrl = "https://pinterest.com/pin/12345",
+            title = "Pinterest Inspiration Board",
+            isCarousel = true,
+            carouselItems = listOf(
+                com.example.data.model.CarouselItem(
+                    id = "pin_12345_0",
+                    url = "https://i.pinimg.com/originals/1.jpg",
+                    thumbnail = "https://i.pinimg.com/originals/1.jpg",
+                    title = "Inspiration 1",
+                    mediaType = MediaType.IMAGE
+                ),
+                com.example.data.model.CarouselItem(
+                    id = "pin_12345_1",
+                    url = "https://i.pinimg.com/originals/2.jpg",
+                    thumbnail = "https://i.pinimg.com/originals/2.jpg",
+                    title = "Inspiration 2",
+                    mediaType = MediaType.IMAGE
+                )
+            )
+        )
+
+        assertTrue(carouselMeta.isCarousel)
+        assertEquals(2, carouselMeta.carouselItems.size)
+        assertEquals("Inspiration 1", carouselMeta.carouselItems[0].title)
     }
 
     @Test

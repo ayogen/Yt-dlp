@@ -19,48 +19,26 @@ data class EngineDiagnosticError(
 
 class YtDlpEngine(private val context: Context) {
 
+    private val extractionEngine = MediaExtractionEngine(context)
+
     suspend fun analyzeUrl(url: String, settings: AppSettings): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
-        AppLogger.i("YtDlpEngine", "Starting URL analysis for: $resolvedUrl (original: $url)")
+        AppLogger.i("YtDlpEngine", "Starting universal media analysis for: $resolvedUrl (original: $url)")
 
-        // Ensure yt-dlp runtime is initialized
+        // Ensure yt-dlp runtime is initialized in background
         YtDlpBinaryManager.ensureInitialized(context)
 
-        // Try yt-dlp first if runtime is ready
-        if (YtDlpBinaryManager.isReady(context)) {
-            val cliResult = YtDlpProcessRunner.extractMetadataCli(
-                binaryPath = "",
-                url = resolvedUrl,
-                cookiesPath = settings.cookiesFilePath.ifBlank { null },
-                customArgs = settings.customYtDlpArgs
-            )
-            if (cliResult.isSuccess) {
-                AppLogger.i("YtDlpEngine", "Metadata extracted via yt-dlp engine")
-                return@withContext cliResult
-            } else {
-                val errorMsg = cliResult.exceptionOrNull()?.message ?: "Unknown extraction error"
-                AppLogger.w("YtDlpEngine", "yt-dlp extraction error: $errorMsg")
-                
-                // Only fall back to embedded extractor if URL is a direct media stream or generic web page,
-                // and NOT a major platform URL where yt-dlp is required.
-                val lower = resolvedUrl.lowercase()
-                val isMajorPlatform = lower.contains("facebook.com") ||
-                        lower.contains("fb.watch") ||
-                        lower.contains("instagram.com") ||
-                        lower.contains("tiktok.com") ||
-                        lower.contains("youtube.com") ||
-                        lower.contains("youtu.be") ||
-                        lower.contains("twitter.com") ||
-                        lower.contains("x.com")
+        val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
+        val userAgent = if (settings.customUserAgent.isNotBlank()) settings.customUserAgent else null
+        val proxyUrl = if (settings.proxyUrl.isNotBlank()) settings.proxyUrl else null
 
-                if (isMajorPlatform) {
-                    return@withContext cliResult
-                }
-            }
-        }
-
-        // Fallback: Use embedded extractor engine for direct media streams and generic websites
-        EmbeddedExtractorEngine.analyzeUrl(resolvedUrl)
+        extractionEngine.extractMedia(
+            url = resolvedUrl,
+            cookiesFile = cookiesFile,
+            userAgent = userAgent,
+            proxyUrl = proxyUrl,
+            geoBypass = settings.geoBypass
+        )
     }
 
     suspend fun executeDownload(

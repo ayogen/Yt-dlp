@@ -136,6 +136,8 @@ fun MediaTypeBadge(mediaType: MediaType, modifier: Modifier = Modifier) {
         MediaType.VIDEO -> ElegantLavenderPrimary to "VIDEO"
         MediaType.AUDIO -> ElegantAmber to "AUDIO"
         MediaType.PLAYLIST -> ElegantGreen to "PLAYLIST"
+        MediaType.IMAGE -> Color(0xFF38BDF8) to "IMAGE"
+        MediaType.CAROUSEL -> Color(0xFFF472B6) to "CAROUSEL"
     }
 
     Surface(

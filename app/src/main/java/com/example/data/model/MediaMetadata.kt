@@ -18,8 +18,23 @@ data class MediaMetadata(
     val formats: List<FormatInfo> = emptyList(),
     val subtitles: List<SubtitleTrack> = emptyList(),
     val extractorName: String = "generic",
-    val directDownloadUrl: String? = null
+    val directDownloadUrl: String? = null,
+    val mediaType: MediaType = MediaType.VIDEO,
+    val mimeType: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val fileSize: Long? = null,
+    val carouselItems: List<CarouselItem> = emptyList()
 ) {
+    val isImage: Boolean
+        get() = mediaType == MediaType.IMAGE
+
+    val isCarousel: Boolean
+        get() = mediaType == MediaType.CAROUSEL || carouselItems.isNotEmpty()
+
+    val isAudioOnly: Boolean
+        get() = mediaType == MediaType.AUDIO || extractorName.equals("soundcloud", ignoreCase = true)
+
     val durationFormatted: String
         get() {
             if (durationSeconds <= 0) return "--:--"
@@ -32,6 +47,107 @@ data class MediaMetadata(
                 String.format("%d:%02d", minutes, seconds)
             }
         }
+}
+
+data class CarouselItem(
+    val id: String,
+    val title: String,
+    val mediaType: MediaType, // MediaType.IMAGE or MediaType.VIDEO
+    val sourceUrl: String,
+    val thumbnail: String = sourceUrl,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationSeconds: Long = 0,
+    val mimeType: String? = null,
+    val fileSize: Long? = null,
+    val isSelected: Boolean = true
+) {
+    val isImage: Boolean get() = mediaType == MediaType.IMAGE
+    val isVideo: Boolean get() = mediaType == MediaType.VIDEO
+}
+
+sealed class ExtractedMedia {
+    data class Image(
+        val id: String,
+        val title: String,
+        val webpageUrl: String,
+        val directDownloadUrl: String,
+        val thumbnail: String = directDownloadUrl,
+        val mimeType: String = "image/jpeg",
+        val width: Int? = null,
+        val height: Int? = null,
+        val fileSize: Long? = null,
+        val uploader: String = "",
+        val uploadDate: String = "",
+        val description: String = ""
+    ) : ExtractedMedia()
+
+    data class Video(
+        val metadata: MediaMetadata
+    ) : ExtractedMedia()
+
+    data class Audio(
+        val metadata: MediaMetadata
+    ) : ExtractedMedia()
+
+    data class Playlist(
+        val metadata: MediaMetadata
+    ) : ExtractedMedia()
+
+    data class Carousel(
+        val id: String,
+        val title: String,
+        val webpageUrl: String,
+        val uploader: String = "",
+        val thumbnail: String = "",
+        val items: List<CarouselItem> = emptyList()
+    ) : ExtractedMedia()
+
+    data class Unknown(
+        val webpageUrl: String,
+        val message: String
+    ) : ExtractedMedia()
+
+    fun toMediaMetadata(): MediaMetadata {
+        return when (this) {
+            is Image -> MediaMetadata(
+                id = id,
+                title = title,
+                webpageUrl = webpageUrl,
+                uploader = uploader,
+                uploadDate = uploadDate,
+                description = description,
+                thumbnail = thumbnail,
+                directDownloadUrl = directDownloadUrl,
+                mediaType = MediaType.IMAGE,
+                mimeType = mimeType,
+                width = width,
+                height = height,
+                fileSize = fileSize,
+                extractorName = "DirectImage"
+            )
+            is Video -> metadata.copy(mediaType = MediaType.VIDEO)
+            is Audio -> metadata.copy(mediaType = MediaType.AUDIO)
+            is Playlist -> metadata.copy(mediaType = MediaType.PLAYLIST, isPlaylist = true)
+            is Carousel -> MediaMetadata(
+                id = id,
+                title = title,
+                webpageUrl = webpageUrl,
+                uploader = uploader,
+                thumbnail = thumbnail.ifBlank { items.firstOrNull()?.thumbnail.orEmpty() },
+                mediaType = MediaType.CAROUSEL,
+                carouselItems = items,
+                extractorName = "SocialCarousel"
+            )
+            is Unknown -> MediaMetadata(
+                id = "unknown",
+                title = "Unknown Media",
+                webpageUrl = webpageUrl,
+                mediaType = MediaType.VIDEO,
+                description = message
+            )
+        }
+    }
 }
 
 data class FormatInfo(

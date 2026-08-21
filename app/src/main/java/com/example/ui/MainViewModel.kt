@@ -525,12 +525,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         qualityLabel: String = "Best"
     ) {
         viewModelScope.launch {
-            val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
+            if (metadata.isCarousel && metadata.carouselItems.isNotEmpty() && selectedPlaylistIndices.isNotEmpty()) {
+                // Carousel batch download
+                val tasksToEnqueue = mutableListOf<DownloadTaskEntity>()
+                var idx = 1
+                val totalSelected = selectedPlaylistIndices.size
 
-            if (metadata.isPlaylist && selectedPlaylistIndices.isNotEmpty()) {
+                selectedPlaylistIndices.sorted().forEach { itemIndex ->
+                    val item = metadata.carouselItems.getOrNull(itemIndex)
+                    if (item != null) {
+                        val itemMediaType = item.mediaType
+                        val itemExt = if (itemMediaType == MediaType.IMAGE) "jpg" else "mp4"
+                        val formatDesc = if (itemMediaType == MediaType.IMAGE) "Original Image (JPG)" else "Video (MP4)"
+
+                        val task = DownloadTaskEntity(
+                            id = UUID.randomUUID().toString(),
+                            url = item.sourceUrl,
+                            title = "${metadata.title} - ${item.title}",
+                            thumbnail = item.thumbnail.ifBlank { metadata.thumbnail },
+                            status = DownloadStatus.QUEUED,
+                            formatId = if (itemMediaType == MediaType.IMAGE) "image_direct" else (selectedFormat?.formatId ?: "best"),
+                            formatDescription = formatDesc,
+                            qualityLabel = if (itemMediaType == MediaType.IMAGE) "Original" else qualityLabel,
+                            totalBytes = item.fileSize ?: 0L,
+                            mediaType = itemMediaType,
+                            isPlaylist = true,
+                            playlistIndex = idx,
+                            playlistTotal = totalSelected,
+                            targetContainer = itemExt,
+                            embedSubs = false,
+                            embedThumbnail = embedThumbnail
+                        )
+                        tasksToEnqueue.add(task)
+                        idx++
+                    }
+                }
+                if (tasksToEnqueue.isNotEmpty()) {
+                    repository.startOrEnqueueDownloads(tasksToEnqueue)
+                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} carousel items"
+                }
+            } else if (metadata.isPlaylist && selectedPlaylistIndices.isNotEmpty()) {
                 val totalSelected = selectedPlaylistIndices.size
                 var idx = 1
                 val tasksToEnqueue = mutableListOf<DownloadTaskEntity>()
+                val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
+
                 selectedPlaylistIndices.sorted().forEach { itemIndex ->
                     val entry = metadata.playlistEntries.getOrNull(itemIndex)
                     if (entry != null) {
@@ -567,7 +606,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val modeLabel = if (effectiveMediaType == MediaType.AUDIO) "audio" else "video"
                     _toastMessage.value = "Enqueued ${tasksToEnqueue.size} playlist $modeLabel items"
                 }
+            } else if (mediaType == MediaType.IMAGE || metadata.isImage) {
+                // Direct or Single Image Download
+                val downloadUrl = metadata.directDownloadUrl ?: metadata.webpageUrl
+                val ext = if (targetContainer.ext != "auto") targetContainer.ext else "jpg"
+                val task = DownloadTaskEntity(
+                    id = UUID.randomUUID().toString(),
+                    url = downloadUrl,
+                    title = metadata.title,
+                    thumbnail = metadata.thumbnail,
+                    status = DownloadStatus.QUEUED,
+                    formatId = "image_direct",
+                    formatDescription = "Original Image (${ext.uppercase()})",
+                    qualityLabel = "Original",
+                    totalBytes = metadata.fileSize ?: 0L,
+                    mediaType = MediaType.IMAGE,
+                    targetContainer = ext,
+                    embedSubs = false,
+                    embedThumbnail = false
+                )
+                repository.startOrEnqueueDownload(task)
+                _toastMessage.value = "Image download started: ${metadata.title.take(30)}..."
             } else {
+                val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
                 val formatDesc = if (effectiveMediaType == MediaType.AUDIO) {
                     "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
                 } else {
