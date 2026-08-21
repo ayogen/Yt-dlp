@@ -265,6 +265,38 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `test filename formatter truncates very long Facebook titles and emojis to prevent Errno 36`() {
+        val longFacebookTitle = "33K views · 1.6K reactions | #فرنسا🇨🇵_بلجيكا🇧🇪_المانيا🇩🇪_اسبانيا🇪🇸_السعودية🇸🇦_الأمارات🇦🇪_الكويت🇰🇼_الأردن🇯🇴_قطر🇧🇭_مصر🇪🇬_الجزائر🇩🇿_لبنان🇱🇧_العراق🇮🇶_تركيا🇹🇷_أسطنبول_سوريا🏳_المغرب🇲🇦 " + "a".repeat(300)
+
+        val formatted = FilenameFormatter.format(
+            template = "%(title)s.%(ext)s",
+            title = longFacebookTitle,
+            uploader = "Facebook Creator",
+            id = "fb_reel_12345",
+            ext = "mp4"
+        )
+
+        assertTrue("Formatted filename must be under 255 bytes for ext4/FAT32", formatted.toByteArray(Charsets.UTF_8).size < 255)
+        assertTrue("Formatted filename must end with extension", formatted.endsWith(".mp4"))
+        assertFalse("Formatted filename must not contain illegal chars", formatted.contains("|") || formatted.contains("?") || formatted.contains("*"))
+    }
+
+    @Test
+    fun `test filename formatter handles empty and invalid title fallback`() {
+        val formatted = FilenameFormatter.format(
+            template = "%(title)s.%(ext)s",
+            title = "   ???///:::***   ",
+            uploader = "Creator",
+            id = "vid_999",
+            ext = "m4a"
+        )
+
+        assertTrue("Should fallback to safe media id name", formatted.contains("media_vid_999"))
+        assertTrue(formatted.endsWith(".m4a"))
+    }
+
+
+    @Test
     fun `test ytdlp detector reports status accurately`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val status = YtDlpBinaryManager.detect(context)

@@ -150,7 +150,7 @@ class YtDlpEngine(private val context: Context) {
         if (isYtDlpReady) {
             val outputTemplate = stagingFile.absolutePath
 
-            val cliResult = YtDlpProcessRunner.runDownloadCli(
+            var cliResult = YtDlpProcessRunner.runDownloadCli(
                 taskId = taskId,
                 binaryPath = "",
                 url = task.url,
@@ -167,6 +167,31 @@ class YtDlpEngine(private val context: Context) {
                 onProgress = onProgress,
                 isCancelled = isCancelled
             )
+
+            // If failed and thumbnail embedding was enabled, retry once without thumbnail embedding
+            // to avoid failing an entire media download due to post-processing thumbnail errors or temp file issues
+            if (cliResult.isFailure && task.embedThumbnail && !isCancelled()) {
+                val failureMsg = cliResult.exceptionOrNull()?.message ?: ""
+                AppLogger.w("YtDlpEngine", "Initial download attempt with thumbnail embedding failed ($failureMsg). Retrying cleanly without thumbnail embedding...", taskId)
+                
+                cliResult = YtDlpProcessRunner.runDownloadCli(
+                    taskId = taskId,
+                    binaryPath = "",
+                    url = task.url,
+                    mediaType = task.mediaType,
+                    formatSpec = formatArg,
+                    targetContainer = resolvedExt,
+                    audioBitrate = task.audioBitrate,
+                    embedSubs = task.embedSubs,
+                    embedThumbnail = false,
+                    outputTemplate = outputTemplate,
+                    ffmpegPath = if (ffmpegStatus.isAvailable) ffmpegStatus.binaryPath else null,
+                    cookiesPath = settings.cookiesFilePath.ifBlank { null },
+                    customArgs = settings.customYtDlpArgs,
+                    onProgress = onProgress,
+                    isCancelled = isCancelled
+                )
+            }
 
             if (cliResult.isSuccess) {
                 val producedPath = cliResult.getOrNull() ?: stagingFile.absolutePath
