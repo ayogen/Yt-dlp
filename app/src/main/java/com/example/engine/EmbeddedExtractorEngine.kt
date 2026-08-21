@@ -16,8 +16,9 @@ import java.util.regex.Pattern
 
 object EmbeddedExtractorEngine {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -43,6 +44,7 @@ object EmbeddedExtractorEngine {
             AppLogger.i("EmbeddedExtractor", "Extracted web page metadata for: ${metadata.title}")
             Result.success(metadata)
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             AppLogger.e("EmbeddedExtractor", "Extraction failed: ${e.message}")
             Result.failure(e)
         }

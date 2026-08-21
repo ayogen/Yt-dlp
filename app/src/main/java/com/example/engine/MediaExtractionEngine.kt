@@ -5,20 +5,21 @@ import com.example.data.model.ExtractedMedia
 import com.example.data.model.FormatInfo
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 
 class MediaExtractionEngine(private val context: Context) {
 
     /**
-     * Unified media extraction method.
-     * Evaluates the URL using a layered multi-tier strategy:
-     * 1. Direct HTTP/MIME/Magic Bytes Inspection
-     * 2. Platform-specific Social / Page Metadata Extraction (Facebook Photos, Instagram Posts/Carousels, Pinterest, Reddit Galleries)
-     * 3. yt-dlp Engine CLI extraction
-     * 4. Embedded extractor & OpenGraph fallback
+     * Unified media extraction method with bounded timeouts and structured fallback:
+     * 1. Direct HTTP/MIME/Magic Bytes Inspection (5s timeout)
+     * 2. Platform-specific Social / Page Metadata Extraction (6s timeout)
+     * 3. yt-dlp Engine CLI extraction (20s timeout)
+     * 4. Embedded extractor & OpenGraph fallback (5s timeout)
      */
     suspend fun extractMedia(
         url: String,
@@ -33,156 +34,229 @@ class MediaExtractionEngine(private val context: Context) {
         }
 
         val canonicalUrl = UrlNormalizer.resolveCanonicalUrl(trimmedUrl)
-        AppLogger.i("MediaExtractionEngine", "Starting extraction for: $canonicalUrl")
+        AppLogger.i("MediaExtractionEngine", "Analysis started")
 
-        // 1. Direct Media Link Inspection (fast HEAD / range header inspection)
-        val directInspection = DirectMediaInspector.inspectUrl(canonicalUrl)
-        if (directInspection.isDirectMedia) {
-            AppLogger.i("MediaExtractionEngine", "Detected direct media stream: ${directInspection.mimeType} (${directInspection.mediaType})")
-            val titleFromUrl = canonicalUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
-                .ifBlank { "media_${System.currentTimeMillis()}" }
-
-            val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
-
-            val metadata = when (directInspection.mediaType) {
-                MediaType.IMAGE -> {
-                    MediaMetadata(
-                        id = "direct_img_" + UUID.randomUUID().toString().take(8),
-                        title = cleanTitle,
-                        webpageUrl = canonicalUrl,
-                        directDownloadUrl = canonicalUrl,
-                        thumbnail = canonicalUrl,
-                        mediaType = MediaType.IMAGE,
-                        mimeType = directInspection.mimeType,
-                        width = directInspection.width,
-                        height = directInspection.height,
-                        fileSize = directInspection.contentLength,
-                        extractorName = "DirectImage"
-                    )
+        try {
+            // Stage 1: Direct Media Link Inspection (fast HEAD / range inspection)
+            AppLogger.i("MediaExtractionEngine", "Direct inspection started")
+            val directInspection = try {
+                withTimeoutOrNull(5000L) {
+                    DirectMediaInspector.inspectUrl(canonicalUrl)
                 }
-                MediaType.AUDIO -> {
-                    val format = FormatInfo(
-                        formatId = "direct_audio",
-                        ext = directInspection.suggestedExt,
-                        acodec = directInspection.mimeType.substringAfter("audio/"),
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.w("MediaExtractionEngine", "Direct inspection error: ${e.message}")
+                null
+            }
+
+            if (directInspection == null) {
+                AppLogger.w("MediaExtractionEngine", "Direct inspection timed out")
+            } else if (directInspection.isDirectMedia) {
+                AppLogger.i("MediaExtractionEngine", "Direct inspection completed: ${directInspection.mimeType} (${directInspection.mediaType})")
+                val titleFromUrl = canonicalUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
+                    .ifBlank { "media_${System.currentTimeMillis()}" }
+
+                val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
+
+                val metadata = when (directInspection.mediaType) {
+                    MediaType.IMAGE -> {
+                        MediaMetadata(
+                            id = "direct_img_" + UUID.randomUUID().toString().take(8),
+                            title = cleanTitle,
+                            webpageUrl = canonicalUrl,
+                            directDownloadUrl = canonicalUrl,
+                            thumbnail = canonicalUrl,
+                            mediaType = MediaType.IMAGE,
+                            mimeType = directInspection.mimeType,
+                            width = directInspection.width,
+                            height = directInspection.height,
+                            fileSize = directInspection.contentLength,
+                            extractorName = "DirectImage"
+                        )
+                    }
+                    MediaType.AUDIO -> {
+                        val format = FormatInfo(
+                            formatId = "direct_audio",
+                            ext = directInspection.suggestedExt,
+                            acodec = directInspection.mimeType.substringAfter("audio/"),
+                            url = canonicalUrl,
+                            filesize = directInspection.contentLength,
+                            isAudioOnly = true
+                        )
+                        MediaMetadata(
+                            id = "direct_audio_" + UUID.randomUUID().toString().take(8),
+                            title = cleanTitle,
+                            webpageUrl = canonicalUrl,
+                            directDownloadUrl = canonicalUrl,
+                            mediaType = MediaType.AUDIO,
+                            formats = listOf(format),
+                            extractorName = "DirectAudio"
+                        )
+                    }
+                    else -> {
+                        val format = FormatInfo(
+                            formatId = "direct_video",
+                            ext = directInspection.suggestedExt,
+                            vcodec = "h264",
+                            acodec = "aac",
+                            url = canonicalUrl,
+                            filesize = directInspection.contentLength,
+                            isMuxed = true
+                        )
+                        MediaMetadata(
+                            id = "direct_video_" + UUID.randomUUID().toString().take(8),
+                            title = cleanTitle,
+                            webpageUrl = canonicalUrl,
+                            directDownloadUrl = canonicalUrl,
+                            mediaType = MediaType.VIDEO,
+                            formats = listOf(format),
+                            extractorName = "DirectVideo"
+                        )
+                    }
+                }
+                AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                return@withContext Result.success(metadata)
+            } else {
+                AppLogger.i("MediaExtractionEngine", "Direct inspection completed")
+            }
+
+            // Stage 2: Page Metadata Extraction (DOM / OpenGraph / Carousel / Photo detection)
+            AppLogger.i("MediaExtractionEngine", "Page metadata extraction started")
+            val pageMedia = try {
+                withTimeoutOrNull(6000L) {
+                    PageMetadataExtractor.extractPageMedia(canonicalUrl)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.w("MediaExtractionEngine", "Page metadata extraction error: ${e.message}")
+                null
+            }
+
+            if (pageMedia != null) {
+                when (pageMedia) {
+                    is ExtractedMedia.Image, is ExtractedMedia.Carousel -> {
+                        AppLogger.i("MediaExtractionEngine", "Page metadata completed: Extracted ${pageMedia.javaClass.simpleName}")
+                        AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                        return@withContext Result.success(pageMedia.toMediaMetadata())
+                    }
+                    else -> {
+                        AppLogger.i("MediaExtractionEngine", "Page metadata completed")
+                    }
+                }
+            } else {
+                AppLogger.i("MediaExtractionEngine", "Page metadata completed")
+            }
+
+            // Stage 3: yt-dlp Engine CLI extraction
+            AppLogger.i("MediaExtractionEngine", "yt-dlp fallback started")
+            val binary = YtDlpBinaryManager.getBinaryFile(context)
+            val binaryPath = binary?.absolutePath ?: "yt-dlp"
+            val customArgsBuilder = StringBuilder()
+            if (!userAgent.isNullOrBlank()) {
+                customArgsBuilder.append("--user-agent \"$userAgent\" ")
+            }
+            if (!proxyUrl.isNullOrBlank()) {
+                customArgsBuilder.append("--proxy $proxyUrl ")
+            }
+            if (geoBypass) {
+                customArgsBuilder.append("--geo-bypass ")
+            }
+
+            val ytDlpResult = try {
+                withTimeoutOrNull(20000L) {
+                    YtDlpProcessRunner.extractMetadataCli(
+                        binaryPath = binaryPath,
                         url = canonicalUrl,
-                        filesize = directInspection.contentLength,
-                        isAudioOnly = true
-                    )
-                    MediaMetadata(
-                        id = "direct_audio_" + UUID.randomUUID().toString().take(8),
-                        title = cleanTitle,
-                        webpageUrl = canonicalUrl,
-                        directDownloadUrl = canonicalUrl,
-                        mediaType = MediaType.AUDIO,
-                        formats = listOf(format),
-                        extractorName = "DirectAudio"
+                        cookiesPath = cookiesFile?.absolutePath,
+                        customArgs = customArgsBuilder.toString().trim()
                     )
                 }
-                else -> {
-                    val format = FormatInfo(
-                        formatId = "direct_video",
-                        ext = directInspection.suggestedExt,
-                        vcodec = "h264",
-                        acodec = "aac",
-                        url = canonicalUrl,
-                        filesize = directInspection.contentLength,
-                        isMuxed = true
-                    )
-                    MediaMetadata(
-                        id = "direct_video_" + UUID.randomUUID().toString().take(8),
-                        title = cleanTitle,
-                        webpageUrl = canonicalUrl,
-                        directDownloadUrl = canonicalUrl,
-                        mediaType = MediaType.VIDEO,
-                        formats = listOf(format),
-                        extractorName = "DirectVideo"
-                    )
-                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.e("MediaExtractionEngine", "yt-dlp execution exception: ${e.message}")
+                Result.failure(e)
             }
-            return@withContext Result.success(metadata)
-        }
 
-        // 2. Social Media Photo/Carousel/Post Detection before yt-dlp (e.g. Facebook photo, Instagram carousel)
-        val pageMedia = PageMetadataExtractor.extractPageMedia(canonicalUrl)
-        if (pageMedia != null) {
-            when (pageMedia) {
-                is ExtractedMedia.Image, is ExtractedMedia.Carousel -> {
-                    AppLogger.i("MediaExtractionEngine", "Extracted page media directly via DOM/OpenGraph: ${pageMedia.javaClass.simpleName}")
-                    return@withContext Result.success(pageMedia.toMediaMetadata())
+            if (ytDlpResult != null && ytDlpResult.isSuccess) {
+                val meta = ytDlpResult.getOrThrow()
+                val refinedMeta = when {
+                    meta.isPlaylist -> meta.copy(mediaType = MediaType.PLAYLIST)
+                    meta.formats.isNotEmpty() && meta.formats.all { it.isAudioOnly } || meta.extractorName.equals("soundcloud", ignoreCase = true) ->
+                        meta.copy(mediaType = MediaType.AUDIO)
+                    else -> meta.copy(mediaType = MediaType.VIDEO)
                 }
-                else -> {
-                    // If video or other, allow yt-dlp to attempt full multi-format extraction first
+                AppLogger.i("MediaExtractionEngine", "yt-dlp completed")
+                AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                return@withContext Result.success(refinedMeta)
+            }
+
+            val ytDlpError = if (ytDlpResult == null) "Extraction timed out after 20s" else ytDlpResult.exceptionOrNull()?.message.orEmpty()
+            AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError")
+
+            // Stage 4: Embedded extractor & Generic OpenGraph fallback
+            if (pageMedia != null) {
+                AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                return@withContext Result.success(pageMedia.toMediaMetadata())
+            }
+
+            val pageMediaFallback = try {
+                withTimeoutOrNull(5000L) {
+                    PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
             }
-        }
 
-        // 3. yt-dlp Engine Extraction
-        val binary = YtDlpBinaryManager.getBinaryFile(context)
-        val binaryPath = binary?.absolutePath ?: "yt-dlp"
-        val customArgsBuilder = StringBuilder()
-        if (!userAgent.isNullOrBlank()) {
-            customArgsBuilder.append("--user-agent \"$userAgent\" ")
-        }
-        if (!proxyUrl.isNullOrBlank()) {
-            customArgsBuilder.append("--proxy $proxyUrl ")
-        }
-        if (geoBypass) {
-            customArgsBuilder.append("--geo-bypass ")
-        }
-
-        val ytDlpResult = YtDlpProcessRunner.extractMetadataCli(
-            binaryPath = binaryPath,
-            url = canonicalUrl,
-            cookiesPath = cookiesFile?.absolutePath,
-            customArgs = customArgsBuilder.toString().trim()
-        )
-
-        if (ytDlpResult.isSuccess) {
-            val meta = ytDlpResult.getOrThrow()
-            // Refine mediaType if audio only or playlist
-            val refinedMeta = when {
-                meta.isPlaylist -> meta.copy(mediaType = MediaType.PLAYLIST)
-                meta.formats.isNotEmpty() && meta.formats.all { it.isAudioOnly } || meta.extractorName.equals("soundcloud", ignoreCase = true) ->
-                    meta.copy(mediaType = MediaType.AUDIO)
-                else -> meta.copy(mediaType = MediaType.VIDEO)
+            if (pageMediaFallback != null) {
+                AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                return@withContext Result.success(pageMediaFallback.toMediaMetadata())
             }
-            AppLogger.i("MediaExtractionEngine", "yt-dlp extraction succeeded for ${meta.title} (${refinedMeta.mediaType})")
-            return@withContext Result.success(refinedMeta)
+
+            val embeddedResult = try {
+                withTimeoutOrNull(5000L) {
+                    EmbeddedExtractorEngine.analyzeUrl(canonicalUrl)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+
+            if (embeddedResult != null && embeddedResult.isSuccess) {
+                AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                return@withContext embeddedResult
+            }
+
+            // Return a clear, diagnosed error message
+            val friendlyMessage = when {
+                ytDlpError.contains("timed out", ignoreCase = true) ->
+                    "Media extraction timed out. The server took too long to respond."
+                ytDlpError.contains("Private video", ignoreCase = true) || ytDlpError.contains("requires login", ignoreCase = true) || ytDlpError.contains("account is private", ignoreCase = true) ->
+                    "This content is private or requires authentication."
+                ytDlpError.contains("No video formats found", ignoreCase = true) ->
+                    "No downloadable media streams were found at this URL."
+                ytDlpError.contains("Unsupported URL", ignoreCase = true) ->
+                    "Unsupported media URL or webpage format."
+                ytDlpError.contains("Video unavailable", ignoreCase = true) ->
+                    "The requested media is unavailable or has been removed."
+                else ->
+                    ytDlpError.ifBlank { "Unable to extract media from this URL." }
+            }
+
+            AppLogger.e("MediaExtractionEngine", "Analysis failed: $friendlyMessage")
+            Result.failure(Exception(friendlyMessage))
+        } catch (e: CancellationException) {
+            AppLogger.i("MediaExtractionEngine", "Analysis cancelled")
+            throw e
+        } catch (e: Throwable) {
+            val msg = e.message ?: "Unexpected extraction failure"
+            AppLogger.e("MediaExtractionEngine", "Analysis failed: $msg")
+            Result.failure(Exception(msg))
         }
-
-        val ytDlpError = ytDlpResult.exceptionOrNull()?.message.orEmpty()
-        AppLogger.w("MediaExtractionEngine", "yt-dlp extraction failed: $ytDlpError")
-
-        // 4. Fallback: If yt-dlp failed, re-check page metadata or embedded extractor
-        if (pageMedia != null) {
-            return@withContext Result.success(pageMedia.toMediaMetadata())
-        }
-
-        val pageMediaFallback = PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
-        if (pageMediaFallback != null) {
-            return@withContext Result.success(pageMediaFallback.toMediaMetadata())
-        }
-
-        val embeddedResult = EmbeddedExtractorEngine.analyzeUrl(canonicalUrl)
-        if (embeddedResult.isSuccess) {
-            return@withContext embeddedResult
-        }
-
-        // Return a clear, diagnosed error message
-        val friendlyMessage = when {
-            ytDlpError.contains("Private video", ignoreCase = true) || ytDlpError.contains("requires login", ignoreCase = true) || ytDlpError.contains("account is private", ignoreCase = true) ->
-                "This content is private or requires authentication."
-            ytDlpError.contains("No video formats found", ignoreCase = true) ->
-                "No downloadable media streams were found at this URL."
-            ytDlpError.contains("Unsupported URL", ignoreCase = true) ->
-                "Unsupported media URL or webpage format."
-            ytDlpError.contains("Video unavailable", ignoreCase = true) ->
-                "The requested media is unavailable or has been removed."
-            else ->
-                ytDlpError.ifBlank { "Unable to extract media from this URL." }
-        }
-
-        Result.failure(Exception(friendlyMessage))
     }
 }

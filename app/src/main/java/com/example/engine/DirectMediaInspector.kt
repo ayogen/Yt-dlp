@@ -10,8 +10,9 @@ object DirectMediaInspector {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
@@ -30,6 +31,23 @@ object DirectMediaInspector {
         val suggestedExt: String = "bin"
     )
 
+    private fun isKnownSocialWebpage(url: String): Boolean {
+        val lower = url.lowercase()
+        val clean = lower.substringBefore("?").substringBefore("#")
+        val hasDirectExt = clean.endsWith(".jpg") || clean.endsWith(".jpeg") || clean.endsWith(".png") ||
+                clean.endsWith(".webp") || clean.endsWith(".gif") || clean.endsWith(".mp4") ||
+                clean.endsWith(".webm") || clean.endsWith(".mkv") || clean.endsWith(".mp3") ||
+                clean.endsWith(".m4a") || clean.endsWith(".flac") || clean.endsWith(".opus") ||
+                clean.endsWith(".wav")
+        if (hasDirectExt) return false
+
+        return lower.contains("instagram.com") || lower.contains("instagr.am") ||
+                lower.contains("facebook.com") || lower.contains("fb.watch") ||
+                lower.contains("tiktok.com") || lower.contains("youtube.com") ||
+                lower.contains("youtu.be") || lower.contains("twitter.com") ||
+                lower.contains("x.com") || lower.contains("vimeo.com")
+    }
+
     /**
      * Inspects a target URL to check whether it directly points to a media resource (Image, Video, Audio)
      * using HTTP HEAD and/or ranged GET request inspection with magic number validation.
@@ -41,6 +59,12 @@ object DirectMediaInspector {
 
         // Fast-path for explicit clean media extensions if network is not needed or as a hint
         val cleanUrl = url.substringBefore("?").substringBefore("#").lowercase()
+
+        // If it is a known social/video webpage that does not end in a direct media extension,
+        // avoid blocking on slow HTTP HEAD/Range requests that are often rejected or rate-limited.
+        if (isKnownSocialWebpage(url)) {
+            return InspectionResult(false, MediaType.VIDEO, "text/html", null)
+        }
 
         try {
             // 1. Attempt HTTP HEAD request
@@ -90,66 +114,71 @@ object DirectMediaInspector {
                 .header("Accept", "image/*,video/*,audio/*,*/*")
                 .build()
 
-            val getResponse = httpClient.newCall(getRequest).execute()
-            val rawContentType = getResponse.header("Content-Type").orEmpty().lowercase()
-            var contentLength = getResponse.header("Content-Length")?.toLongOrNull()
-            val contentRange = getResponse.header("Content-Range")
-            if (contentRange != null && contentRange.contains("/")) {
-                val totalFromRange = contentRange.substringAfterLast("/").trim().toLongOrNull()
-                if (totalFromRange != null && totalFromRange > 0) {
-                    contentLength = totalFromRange
-                }
+            val getResponse = try {
+                httpClient.newCall(getRequest).execute()
+            } catch (e: Exception) {
+                null
             }
 
-            if (!getResponse.isSuccessful && getResponse.code != 206) {
-                getResponse.close()
-                return inspectByExtensionOnly(cleanUrl)
-            }
+            if (getResponse != null) {
+                getResponse.use { resp ->
+                    val rawContentType = resp.header("Content-Type").orEmpty().lowercase()
+                    var contentLength = resp.header("Content-Length")?.toLongOrNull()
+                    val contentRange = resp.header("Content-Range")
+                    if (contentRange != null && contentRange.contains("/")) {
+                        val totalFromRange = contentRange.substringAfterLast("/").trim().toLongOrNull()
+                        if (totalFromRange != null && totalFromRange > 0) {
+                            contentLength = totalFromRange
+                        }
+                    }
 
-            // Read the first bytes for magic signature and dimension detection
-            val responseBody = getResponse.body
-            if (responseBody != null) {
-                val stream = responseBody.byteStream()
-                val headerBytes = ByteArray(4096)
-                val bytesRead = readFully(stream, headerBytes)
-                getResponse.close()
+                    if (!resp.isSuccessful && resp.code != 206) {
+                        return inspectByExtensionOnly(cleanUrl)
+                    }
 
-                if (bytesRead > 0) {
-                    // Check magic bytes
-                    val magicClassified = classifyMagicBytes(headerBytes, bytesRead)
-                    if (magicClassified != null) {
-                        val (mediaType, mimeType) = magicClassified
-                        val (w, h) = if (mediaType == MediaType.IMAGE) extractImageDimensions(headerBytes, bytesRead, mimeType) else Pair(null, null)
+                    // Read the first bytes for magic signature and dimension detection
+                    val responseBody = resp.body
+                    if (responseBody != null) {
+                        val stream = responseBody.byteStream()
+                        val headerBytes = ByteArray(4096)
+                        val bytesRead = readFully(stream, headerBytes)
+
+                        if (bytesRead > 0) {
+                            // Check magic bytes
+                            val magicClassified = classifyMagicBytes(headerBytes, bytesRead)
+                            if (magicClassified != null) {
+                                val (mediaType, mimeType) = magicClassified
+                                val (w, h) = if (mediaType == MediaType.IMAGE) extractImageDimensions(headerBytes, bytesRead, mimeType) else Pair(null, null)
+                                return InspectionResult(
+                                    isDirectMedia = true,
+                                    mediaType = mediaType,
+                                    mimeType = mimeType,
+                                    contentLength = contentLength,
+                                    width = w,
+                                    height = h,
+                                    suggestedExt = getExtensionForMime(mimeType, cleanUrl)
+                                )
+                            }
+                        }
+                    }
+
+                    // Check Content-Type header if magic bytes were inconclusive
+                    val classified = classifyContentType(rawContentType, cleanUrl)
+                    if (classified != null) {
                         return InspectionResult(
                             isDirectMedia = true,
-                            mediaType = mediaType,
-                            mimeType = mimeType,
+                            mediaType = classified.first,
+                            mimeType = classified.second,
                             contentLength = contentLength,
-                            width = w,
-                            height = h,
-                            suggestedExt = getExtensionForMime(mimeType, cleanUrl)
+                            suggestedExt = getExtensionForMime(classified.second, cleanUrl)
                         )
                     }
+
+                    // If text/html, it's definitely a webpage
+                    if (rawContentType.contains("text/html") || rawContentType.contains("application/xhtml")) {
+                        return InspectionResult(false, MediaType.VIDEO, rawContentType, null)
+                    }
                 }
-            } else {
-                getResponse.close()
-            }
-
-            // Check Content-Type header if magic bytes were inconclusive
-            val classified = classifyContentType(rawContentType, cleanUrl)
-            if (classified != null) {
-                return InspectionResult(
-                    isDirectMedia = true,
-                    mediaType = classified.first,
-                    mimeType = classified.second,
-                    contentLength = contentLength,
-                    suggestedExt = getExtensionForMime(classified.second, cleanUrl)
-                )
-            }
-
-            // If text/html, it's definitely a webpage
-            if (rawContentType.contains("text/html") || rawContentType.contains("application/xhtml")) {
-                return InspectionResult(false, MediaType.VIDEO, rawContentType, null)
             }
 
         } catch (e: Exception) {

@@ -28,11 +28,13 @@ object YtDlpProcessRunner {
         cookiesPath: String? = null,
         customArgs: String = ""
     ): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+        val processId = "meta_${System.currentTimeMillis()}_${(1000..9999).random()}"
         try {
             val request = YoutubeDLRequest(url)
             request.addOption("--dump-single-json")
             request.addOption("--no-warnings")
             request.addOption("--flat-playlist")
+            request.addOption("--socket-timeout", "15")
 
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
                 request.addOption("--cookies", cookiesPath)
@@ -53,7 +55,7 @@ object YtDlpProcessRunner {
             }
 
             AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url")
-            val response = YoutubeDL.getInstance().execute(request)
+            val response = YoutubeDL.getInstance().execute(request, processId)
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
@@ -72,6 +74,12 @@ object YtDlpProcessRunner {
 
             Result.success(metadata)
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) {
+                try {
+                    YoutubeDL.getInstance().destroyProcessById(processId)
+                } catch (_: Exception) {}
+                throw e
+            }
             val msg = e.message ?: e.javaClass.simpleName
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)

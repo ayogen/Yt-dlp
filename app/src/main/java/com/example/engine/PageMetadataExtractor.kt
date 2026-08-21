@@ -16,8 +16,9 @@ object PageMetadataExtractor {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
@@ -110,8 +111,8 @@ object PageMetadataExtractor {
 
     fun extractInstagramMedia(url: String): ExtractedMedia? {
         val lower = url.lowercase()
-        // If explicitly a Reel URL, let yt-dlp handle it
-        if (lower.contains("/reel/")) {
+        // If explicitly a Reel, TV, or Stories URL, let yt-dlp handle it directly
+        if (lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") || lower.contains("/stories/")) {
             return null
         }
 

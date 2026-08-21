@@ -145,6 +145,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val fullDiagnosticReport: StateFlow<DiagnosticReport?> = _fullDiagnosticReport.asStateFlow()
 
     private var setupJob: Job? = null
+    private var analysisJob: Job? = null
 
     val deviceAbi: String
         get() = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "arm64-v8a"
@@ -495,15 +496,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        viewModelScope.launch {
+        analysisJob?.cancel()
+        analysisJob = viewModelScope.launch {
             _analysisState.value = AnalysisUiState.Analyzing
             AppLogger.i("MainViewModel", "Analyzing: $url")
-            val result = repository.analyzeUrl(url)
-            if (result.isSuccess) {
-                _analysisState.value = AnalysisUiState.Success(result.getOrThrow())
-            } else {
-                val ex = result.exceptionOrNull() ?: Exception("Unknown analysis failure")
-                val diag = engine.classifyError(ex)
+            try {
+                val result = repository.analyzeUrl(url)
+                if (result.isSuccess) {
+                    _analysisState.value = AnalysisUiState.Success(result.getOrThrow())
+                } else {
+                    val ex = result.exceptionOrNull() ?: Exception("Unknown analysis failure")
+                    val diag = engine.classifyError(ex)
+                    _analysisState.value = AnalysisUiState.Error(diag)
+                }
+            } catch (e: CancellationException) {
+                AppLogger.d("MainViewModel", "Analysis job cancelled")
+                if (_analysisState.value is AnalysisUiState.Analyzing) {
+                    _analysisState.value = AnalysisUiState.Idle
+                }
+                throw e
+            } catch (e: Throwable) {
+                AppLogger.e("MainViewModel", "Analysis exception: ${e.message}")
+                val diag = engine.classifyError(e)
                 _analysisState.value = AnalysisUiState.Error(diag)
             }
         }
