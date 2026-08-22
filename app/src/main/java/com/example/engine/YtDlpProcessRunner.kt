@@ -27,9 +27,9 @@ object YtDlpProcessRunner {
         url: String,
         cookiesPath: String? = null,
         customArgs: String = ""
-    ): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+    ): Result<MediaMetadata> {
         val processId = "meta_${System.currentTimeMillis()}_${(1000..9999).random()}"
-        try {
+        return try {
             val request = YoutubeDLRequest(url)
             request.addOption("--dump-single-json")
             request.addOption("--no-warnings")
@@ -54,13 +54,14 @@ object YtDlpProcessRunner {
                 }
             }
 
-            AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url")
-            val response = YoutubeDL.getInstance().execute(request, processId)
+            AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url [processId=$processId]")
+
+            val response = executeRequestCancellable(request, processId)
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
                 AppLogger.e("YtDlpProcessRunner", "Metadata extraction failed: empty output")
-                return@withContext Result.failure(Exception("yt-dlp returned empty metadata output"))
+                return Result.failure(Exception("yt-dlp returned empty metadata output"))
             }
 
             val json = JSONObject(stdout)
@@ -69,7 +70,7 @@ object YtDlpProcessRunner {
 
             if (isPlaylistDetected && metadata.playlistEntries.isEmpty()) {
                 AppLogger.e("YtDlpProcessRunner", "Playlist contains no accessible videos or is private")
-                return@withContext Result.failure(Exception("Playlist contains no accessible videos or is private"))
+                return Result.failure(Exception("Playlist contains no accessible videos or is private"))
             }
 
             Result.success(metadata)
@@ -83,6 +84,45 @@ object YtDlpProcessRunner {
             val msg = e.message ?: e.javaClass.simpleName
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Executes a YoutubeDLRequest in a background thread while registering an invokeOnCancellation
+     * handler that immediately invokes YoutubeDL.destroyProcessById(processId) if the coroutine is cancelled
+     * or timed out while execute() is blocking.
+     */
+    private suspend fun executeRequestCancellable(
+        request: YoutubeDLRequest,
+        processId: String
+    ): com.yausername.youtubedl_android.YoutubeDLResponse = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation {
+            try {
+                AppLogger.i("YtDlpProcessRunner", "Coroutine cancelled: destroying yt-dlp process $processId")
+                YoutubeDL.getInstance().destroyProcessById(processId)
+            } catch (e: Exception) {
+                AppLogger.w("YtDlpProcessRunner", "Error in invokeOnCancellation destroyProcessById($processId): ${e.message}")
+            }
+        }
+
+        // Run the blocking execute on IO dispatcher
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "yt-dlp-exec-$processId").apply { isDaemon = true }
+        }
+
+        executor.execute {
+            try {
+                val resp = YoutubeDL.getInstance().execute(request, processId)
+                if (continuation.isActive) {
+                    continuation.resume(resp) {}
+                }
+            } catch (e: Throwable) {
+                if (continuation.isActive) {
+                    continuation.resumeWith(Result.failure(e))
+                }
+            } finally {
+                executor.shutdown()
+            }
         }
     }
 
@@ -175,42 +215,52 @@ object YtDlpProcessRunner {
             var lastTotal = 0L
             var lastEta = 0L
 
-            val response = YoutubeDL.getInstance().execute(request, taskId) { progress, etaInSeconds, line ->
-                if (isCancelled()) {
-                    YoutubeDL.getInstance().destroyProcessById(taskId)
-                }
+            val response = try {
+                YoutubeDL.getInstance().execute(request, taskId) { progress, etaInSeconds, line ->
+                    if (isCancelled()) {
+                        YoutubeDL.getInstance().destroyProcessById(taskId)
+                    }
 
-                if (line.contains("[download] Destination:")) {
-                    downloadedFile = line.substringAfter("[download] Destination:").trim()
-                } else if (line.contains("[Merger] Merging formats into")) {
-                    val merged = line.substringAfter("[Merger] Merging formats into").replace("\"", "").trim()
-                    if (merged.isNotBlank()) downloadedFile = merged
-                } else if (line.contains("[ExtractAudio] Destination:")) {
-                    val audioDest = line.substringAfter("[ExtractAudio] Destination:").trim()
-                    if (audioDest.isNotBlank()) downloadedFile = audioDest
-                }
+                    if (line.contains("[download] Destination:")) {
+                        downloadedFile = line.substringAfter("[download] Destination:").trim()
+                    } else if (line.contains("[Merger] Merging formats into")) {
+                        val merged = line.substringAfter("[Merger] Merging formats into").replace("\"", "").trim()
+                        if (merged.isNotBlank()) downloadedFile = merged
+                    } else if (line.contains("[ExtractAudio] Destination:")) {
+                        val audioDest = line.substringAfter("[ExtractAudio] Destination:").trim()
+                        if (audioDest.isNotBlank()) downloadedFile = audioDest
+                    }
 
-                val parsedSpeed = YtDlpOutputParser.parseSpeed(line)
-                if (parsedSpeed > 0.0) {
-                    lastSpeed = parsedSpeed
-                }
+                    val parsedSpeed = YtDlpOutputParser.parseSpeed(line)
+                    if (parsedSpeed > 0.0) {
+                        lastSpeed = parsedSpeed
+                    }
 
-                val (dBytes, tBytes) = YtDlpOutputParser.parseSize(line, progress)
-                if (tBytes > 0L) {
-                    lastTotal = tBytes
-                }
-                if (dBytes > 0L) {
-                    lastDownloaded = dBytes
-                } else if (progress > 0f && lastTotal > 0L) {
-                    lastDownloaded = ((progress / 100.0) * lastTotal).toLong()
-                }
+                    val (dBytes, tBytes) = YtDlpOutputParser.parseSize(line, progress)
+                    if (tBytes > 0L) {
+                        lastTotal = tBytes
+                    }
+                    if (dBytes > 0L) {
+                        lastDownloaded = dBytes
+                    } else if (progress > 0f && lastTotal > 0L) {
+                        lastDownloaded = ((progress / 100.0) * lastTotal).toLong()
+                    }
 
-                val parsedEta = if (etaInSeconds > 0) etaInSeconds else YtDlpOutputParser.parseEta(line)
-                if (parsedEta > 0) {
-                    lastEta = parsedEta
-                }
+                    val parsedEta = if (etaInSeconds > 0) etaInSeconds else YtDlpOutputParser.parseEta(line)
+                    if (parsedEta > 0) {
+                        lastEta = parsedEta
+                    }
 
-                onProgress(progress, lastDownloaded, lastTotal, lastSpeed, lastEta)
+                    onProgress(progress, lastDownloaded, lastTotal, lastSpeed, lastEta)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) {
+                    try {
+                        YoutubeDL.getInstance().destroyProcessById(taskId)
+                    } catch (_: Exception) {}
+                    throw e
+                }
+                throw e
             }
 
             // Check if downloaded file exists

@@ -1,5 +1,6 @@
 package com.example.engine
 
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -18,9 +19,9 @@ object UrlNormalizer {
 
     /**
      * Resolves short links, redirects, and platform share URLs to canonical URLs
-     * that yt-dlp extractors natively understand.
+     * that yt-dlp extractors natively understand. Supports coroutine cancellation.
      */
-    fun resolveCanonicalUrl(inputUrl: String): String {
+    suspend fun resolveCanonicalUrl(inputUrl: String): String {
         val trimmed = inputUrl.trim()
         if (trimmed.isBlank()) return trimmed
 
@@ -72,7 +73,7 @@ object UrlNormalizer {
         return normalized
     }
 
-    private fun followRedirects(url: String): String? {
+    private suspend fun followRedirects(url: String): String? {
         return try {
             val request = Request.Builder()
                 .url(url)
@@ -81,14 +82,17 @@ object UrlNormalizer {
                 .head()
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                val finalUrl = response.request.url.toString()
+            val response = CancellableNetworkClient.executeCancellable(client, request)
+            response.use { resp ->
+                val finalUrl = resp.request.url.toString()
                 if (finalUrl.isNotBlank() && finalUrl != url) {
                     finalUrl
                 } else {
-                    response.header("Location")
+                    resp.header("Location")
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             try {
                 val getRequest = Request.Builder()
@@ -96,9 +100,12 @@ object UrlNormalizer {
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .get()
                     .build()
-                client.newCall(getRequest).execute().use { response ->
-                    response.request.url.toString()
+                val response = CancellableNetworkClient.executeCancellable(client, getRequest)
+                response.use { resp ->
+                    resp.request.url.toString()
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e2: Exception) {
                 null
             }

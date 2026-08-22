@@ -34,7 +34,14 @@ class MediaExtractionEngine(private val context: Context) {
         }
 
         val canonicalUrl = UrlNormalizer.resolveCanonicalUrl(trimmedUrl)
-        AppLogger.i("MediaExtractionEngine", "Analysis started")
+        AppLogger.i("MediaExtractionEngine", "Analysis started: $canonicalUrl")
+
+        // Step 0: Semantic Media Classification
+        val classification = SemanticClassifier.classify(canonicalUrl)
+        AppLogger.i(
+            "MediaExtractionEngine",
+            "[SemanticClassifier] platform=${classification.platform}, intent=${classification.intent}, ytDlpEligible=${classification.isYtDlpEligible}, reason=${classification.reason}"
+        )
 
         try {
             // Stage 1: Direct Media Link Inspection (fast HEAD / range inspection)
@@ -149,35 +156,46 @@ class MediaExtractionEngine(private val context: Context) {
                 AppLogger.i("MediaExtractionEngine", "Page metadata completed")
             }
 
-            // Stage 3: yt-dlp Engine CLI extraction
-            AppLogger.i("MediaExtractionEngine", "yt-dlp fallback started")
-            val binary = YtDlpBinaryManager.getBinaryFile(context)
-            val binaryPath = binary?.absolutePath ?: "yt-dlp"
-            val customArgsBuilder = StringBuilder()
-            if (!userAgent.isNullOrBlank()) {
-                customArgsBuilder.append("--user-agent \"$userAgent\" ")
-            }
-            if (!proxyUrl.isNullOrBlank()) {
-                customArgsBuilder.append("--proxy $proxyUrl ")
-            }
-            if (geoBypass) {
-                customArgsBuilder.append("--geo-bypass ")
-            }
+            // Stage 3: yt-dlp Engine CLI extraction (Evaluated against Eligibility Gate)
+            val gateDecision = YtDlpEligibilityGate.evaluate(canonicalUrl, classification, pageMedia)
+            AppLogger.i(
+                "MediaExtractionEngine",
+                "[YtDlpEligibilityGate] eligible=${gateDecision.isEligible}, reason=${gateDecision.reason}"
+            )
 
-            val ytDlpResult = try {
-                withTimeoutOrNull(20000L) {
-                    YtDlpProcessRunner.extractMetadataCli(
-                        binaryPath = binaryPath,
-                        url = canonicalUrl,
-                        cookiesPath = cookiesFile?.absolutePath,
-                        customArgs = customArgsBuilder.toString().trim()
-                    )
+            val ytDlpResult = if (gateDecision.isEligible) {
+                AppLogger.i("MediaExtractionEngine", "yt-dlp extraction started")
+                val binary = YtDlpBinaryManager.getBinaryFile(context)
+                val binaryPath = binary?.absolutePath ?: "yt-dlp"
+                val customArgsBuilder = StringBuilder()
+                if (!userAgent.isNullOrBlank()) {
+                    customArgsBuilder.append("--user-agent \"$userAgent\" ")
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLogger.e("MediaExtractionEngine", "yt-dlp execution exception: ${e.message}")
-                Result.failure(e)
+                if (!proxyUrl.isNullOrBlank()) {
+                    customArgsBuilder.append("--proxy $proxyUrl ")
+                }
+                if (geoBypass) {
+                    customArgsBuilder.append("--geo-bypass ")
+                }
+
+                try {
+                    withTimeoutOrNull(20000L) {
+                        YtDlpProcessRunner.extractMetadataCli(
+                            binaryPath = binaryPath,
+                            url = canonicalUrl,
+                            cookiesPath = cookiesFile?.absolutePath,
+                            customArgs = customArgsBuilder.toString().trim()
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AppLogger.e("MediaExtractionEngine", "yt-dlp execution exception: ${e.message}")
+                    Result.failure(e)
+                }
+            } else {
+                AppLogger.i("MediaExtractionEngine", "yt-dlp extraction skipped: ${gateDecision.reason}")
+                null
             }
 
             if (ytDlpResult != null && ytDlpResult.isSuccess) {
@@ -193,7 +211,11 @@ class MediaExtractionEngine(private val context: Context) {
                 return@withContext Result.success(refinedMeta)
             }
 
-            val ytDlpError = if (ytDlpResult == null) "Extraction timed out after 20s" else ytDlpResult.exceptionOrNull()?.message.orEmpty()
+            val ytDlpError = if (gateDecision.isEligible) {
+                if (ytDlpResult == null) "Extraction timed out after 20s" else ytDlpResult.exceptionOrNull()?.message.orEmpty()
+            } else {
+                "Skipped: ${gateDecision.reason}"
+            }
             AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError")
 
             // Stage 4: Embedded extractor & Generic OpenGraph fallback

@@ -329,34 +329,69 @@ fun HomeScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Analyze Action Button
-                Button(
-                    onClick = {
-                        if (urlInput.isNotBlank()) {
-                            viewModel.analyzeUrl(urlInput)
+                if (analysisState is AnalysisUiState.Analyzing) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { /* In progress */ },
+                            enabled = false,
+                            colors = ButtonDefaults.buttonColors(
+                                disabledContainerColor = ElegantDarkSurfaceVariant,
+                                disabledContentColor = ElegantLavenderPrimary
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp)
+                                .testTag("analyze_button")
+                        ) {
+                            CircularProgressIndicator(
+                                color = ElegantLavenderPrimary,
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(text = "Analyzing...", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
-                    },
-                    enabled = urlInput.isNotBlank() && analysisState !is AnalysisUiState.Analyzing,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ElegantLavenderPrimary,
-                        contentColor = ElegantLavenderOnPrimary,
-                        disabledContainerColor = ElegantDarkSurfaceVariant,
-                        disabledContentColor = ElegantTextTertiary
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("analyze_button")
-                ) {
-                    if (analysisState is AnalysisUiState.Analyzing) {
-                        CircularProgressIndicator(
-                            color = ElegantLavenderOnPrimary,
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Analyzing & Classifying Media...", fontWeight = FontWeight.Bold)
-                    } else {
+
+                        OutlinedButton(
+                            onClick = { viewModel.cancelAnalysis() },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = ElegantRed
+                            ),
+                            border = BorderStroke(1.dp, ElegantRed.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .height(50.dp)
+                                .testTag("cancel_analysis_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Cancel", tint = ElegantRed)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Cancel", fontWeight = FontWeight.Bold, color = ElegantRed)
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            if (urlInput.isNotBlank()) {
+                                viewModel.analyzeUrl(urlInput)
+                            }
+                        },
+                        enabled = urlInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElegantLavenderPrimary,
+                            contentColor = ElegantLavenderOnPrimary,
+                            disabledContainerColor = ElegantDarkSurfaceVariant,
+                            disabledContentColor = ElegantTextTertiary
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("analyze_button")
+                    ) {
                         Icon(imageVector = Icons.Default.Search, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(text = "Analyze Media", fontWeight = FontWeight.Bold, fontSize = 15.sp)

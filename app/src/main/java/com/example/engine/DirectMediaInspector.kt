@@ -1,6 +1,7 @@
 package com.example.engine
 
 import com.example.data.model.MediaType
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.InputStream
@@ -51,8 +52,9 @@ object DirectMediaInspector {
     /**
      * Inspects a target URL to check whether it directly points to a media resource (Image, Video, Audio)
      * using HTTP HEAD and/or ranged GET request inspection with magic number validation.
+     * Supports coroutine cancellation.
      */
-    fun inspectUrl(url: String): InspectionResult {
+    suspend fun inspectUrl(url: String): InspectionResult {
         if (url.isBlank()) {
             return InspectionResult(false, MediaType.VIDEO, "unknown", null)
         }
@@ -76,7 +78,9 @@ object DirectMediaInspector {
                 .build()
 
             val headResponse = try {
-                httpClient.newCall(headRequest).execute()
+                CancellableNetworkClient.executeCancellable(httpClient, headRequest)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 null
             }
@@ -115,7 +119,9 @@ object DirectMediaInspector {
                 .build()
 
             val getResponse = try {
-                httpClient.newCall(getRequest).execute()
+                CancellableNetworkClient.executeCancellable(httpClient, getRequest)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 null
             }
@@ -181,6 +187,8 @@ object DirectMediaInspector {
                 }
             }
 
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("DirectMediaInspector", "Direct media inspection network check failed for $url: ${e.message}")
         }

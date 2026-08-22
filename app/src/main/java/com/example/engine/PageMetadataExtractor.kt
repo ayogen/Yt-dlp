@@ -3,6 +3,7 @@ package com.example.engine
 import com.example.data.model.CarouselItem
 import com.example.data.model.ExtractedMedia
 import com.example.data.model.MediaType
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -30,8 +31,9 @@ object PageMetadataExtractor {
     /**
      * Attempts to extract rich media (Image, Carousel, Video, or Audio) from a web page using
      * HTML meta tags, OpenGraph, JSON-LD, and platform-specific social DOM structures.
+     * Supports coroutine cancellation.
      */
-    fun extractPageMedia(url: String): ExtractedMedia? {
+    suspend fun extractPageMedia(url: String): ExtractedMedia? {
         val cleanUrl = url.trim()
         if (cleanUrl.isBlank()) return null
 
@@ -62,7 +64,7 @@ object PageMetadataExtractor {
         return extractGenericPageMedia(cleanUrl)
     }
 
-    fun extractFacebookMedia(url: String): ExtractedMedia? {
+    suspend fun extractFacebookMedia(url: String): ExtractedMedia? {
         val lower = url.lowercase()
         // If explicitly a Reel or Video URL, let yt-dlp handle it
         if (lower.contains("/reel/") || lower.contains("/videos/") || lower.contains("/watch") || lower.contains("fb.watch")) {
@@ -103,13 +105,15 @@ object PageMetadataExtractor {
                     description = cleanText(description)
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Facebook page extraction failed: ${e.message}")
         }
         return null
     }
 
-    fun extractInstagramMedia(url: String): ExtractedMedia? {
+    suspend fun extractInstagramMedia(url: String): ExtractedMedia? {
         val lower = url.lowercase()
         // If explicitly a Reel, TV, or Stories URL, let yt-dlp handle it directly
         if (lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") || lower.contains("/stories/")) {
@@ -162,6 +166,8 @@ object PageMetadataExtractor {
                     description = cleanText(description)
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Instagram extraction error: ${e.message}")
         }
@@ -228,7 +234,7 @@ object PageMetadataExtractor {
         return items
     }
 
-    fun extractPinterestMedia(url: String): ExtractedMedia? {
+    suspend fun extractPinterestMedia(url: String): ExtractedMedia? {
         try {
             val html = fetchHtml(url) ?: return null
             val ogImage = extractMetaTag(html, "og:image")
@@ -256,13 +262,15 @@ object PageMetadataExtractor {
                     description = cleanText(description)
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Pinterest extraction error: ${e.message}")
         }
         return null
     }
 
-    fun extractRedditMedia(url: String): ExtractedMedia? {
+    suspend fun extractRedditMedia(url: String): ExtractedMedia? {
         try {
             val html = fetchHtml(url) ?: return null
             // Check for Reddit gallery
@@ -296,6 +304,8 @@ object PageMetadataExtractor {
                     uploader = "Reddit"
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Reddit extraction error: ${e.message}")
         }
@@ -342,7 +352,7 @@ object PageMetadataExtractor {
         return items
     }
 
-    fun extractGenericPageMedia(url: String): ExtractedMedia? {
+    suspend fun extractGenericPageMedia(url: String): ExtractedMedia? {
         try {
             val html = fetchHtml(url) ?: return null
 
@@ -383,13 +393,15 @@ object PageMetadataExtractor {
                     description = cleanText(description)
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Generic page extraction error: ${e.message}")
         }
         return null
     }
 
-    private fun fetchHtml(url: String): String? {
+    private suspend fun fetchHtml(url: String): String? {
         return try {
             val request = Request.Builder()
                 .url(url)
@@ -399,11 +411,14 @@ object PageMetadataExtractor {
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    response.body?.string()
+            val response = CancellableNetworkClient.executeCancellable(httpClient, request)
+            response.use { resp ->
+                if (resp.isSuccessful) {
+                    resp.body?.string()
                 } else null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Failed to fetch HTML for $url: ${e.message}")
             null
