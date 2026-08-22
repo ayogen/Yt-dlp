@@ -441,11 +441,11 @@ fun HomeScreen(viewModel: MainViewModel) {
             color = ElegantTextPrimary
         )
         Spacer(modifier = Modifier.height(10.dp))
-        Row(
+        LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            listOf("YouTube", "Vimeo", "Twitter/X", "TikTok", "Reddit", "Direct Link").forEach { platform ->
+            items(listOf("YouTube", "TikTok", "Reddit", "Instagram", "Facebook", "Pinterest", "Twitter/X", "Vimeo", "Direct Link")) { platform ->
                 Surface(
                     color = ElegantDarkCard,
                     shape = RoundedCornerShape(10.dp),
@@ -461,6 +461,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                         color = ElegantTextSecondary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }

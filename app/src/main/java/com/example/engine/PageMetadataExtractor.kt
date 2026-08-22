@@ -55,9 +55,14 @@ object PageMetadataExtractor {
             if (pinMedia != null) return pinMedia
         }
 
-        if (lower.contains("reddit.com")) {
+        if (lower.contains("reddit.com") || lower.contains("redd.it")) {
             val redditMedia = extractRedditMedia(cleanUrl)
             if (redditMedia != null) return redditMedia
+        }
+
+        if (lower.contains("tiktok.com")) {
+            val tiktokMedia = extractTikTokMedia(cleanUrl)
+            if (tiktokMedia != null) return tiktokMedia
         }
 
         // 2. Generic webpage OpenGraph & JSON-LD extraction
@@ -274,7 +279,7 @@ object PageMetadataExtractor {
         try {
             val html = fetchHtml(url) ?: return null
             // Check for Reddit gallery
-            if (html.contains("gallery_data") || html.contains("media_metadata")) {
+            if (html.contains("gallery_data") || html.contains("media_metadata") || html.contains("shreddit-gallery")) {
                 val galleryItems = extractRedditGalleryItems(html)
                 if (galleryItems.isNotEmpty()) {
                     val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Reddit Gallery"
@@ -289,17 +294,45 @@ object PageMetadataExtractor {
                 }
             }
 
-            // Single image
-            val ogImage = extractMetaTag(html, "og:image")
-            val hasVideo = html.contains("v.redd.it") || html.contains("og:video")
-            if (!hasVideo && !ogImage.isNullOrBlank() && (ogImage.contains("preview.redd.it") || ogImage.contains("i.redd.it"))) {
+            // Check if page has video
+            val hasVideo = html.contains("v.redd.it") ||
+                    html.contains("og:video") ||
+                    html.contains("post-type=\"video\"") ||
+                    html.contains("shreddit-player")
+            if (hasVideo) {
+                return null // Let yt-dlp handle Reddit video
+            }
+
+            // Single image extraction
+            var rawImage = extractMetaTag(html, "og:image")
+                ?: extractMetaTag(html, "twitter:image")
+
+            if (rawImage.isNullOrBlank()) {
+                val imgPattern = Pattern.compile("content-href=[\"'](https?://i\\.redd\\.it/[^\"']+)[\"']", Pattern.CASE_INSENSITIVE)
+                val m = imgPattern.matcher(html)
+                if (m.find()) {
+                    rawImage = m.group(1)
+                }
+            }
+
+            if (!rawImage.isNullOrBlank()) {
+                var cleanImg = decodeHtmlEntities(rawImage)
+                if (cleanImg.contains("reddit.com/media") && cleanImg.contains("url=")) {
+                    try {
+                        val param = cleanImg.substringAfter("url=").substringBefore("&")
+                        val decoded = URLDecoder.decode(param, "UTF-8")
+                        if (decoded.startsWith("http")) cleanImg = decoded
+                    } catch (e: Exception) {}
+                }
+                cleanImg = cleanImg.replace("&amp;", "&")
+
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Reddit Image"
                 return ExtractedMedia.Image(
                     id = "reddit_" + UUID.randomUUID().toString().take(8),
                     title = cleanText(title),
                     webpageUrl = url,
-                    directDownloadUrl = decodeHtmlEntities(ogImage),
-                    thumbnail = decodeHtmlEntities(ogImage),
+                    directDownloadUrl = cleanImg,
+                    thumbnail = cleanImg,
                     mimeType = "image/jpeg",
                     uploader = "Reddit"
                 )
@@ -310,6 +343,86 @@ object PageMetadataExtractor {
             AppLogger.d("PageMetadataExtractor", "Reddit extraction error: ${e.message}")
         }
         return null
+    }
+
+    suspend fun extractTikTokMedia(url: String): ExtractedMedia? {
+        val lower = url.lowercase()
+        // If explicitly a video endpoint, let yt-dlp handle it
+        if (lower.contains("/video/") || lower.contains("/v/")) {
+            return null
+        }
+
+        try {
+            val html = fetchHtml(url) ?: return null
+
+            // If it is a /photo/ URL or contains image slideshow data
+            if (lower.contains("/photo/") || html.contains("image_post_info") || html.contains("\"images\":[")) {
+                val carouselItems = extractTikTokCarouselItems(html)
+                val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "TikTok Photo"
+                if (carouselItems.isNotEmpty()) {
+                    return ExtractedMedia.Carousel(
+                        id = "tiktok_carousel_" + UUID.randomUUID().toString().take(8),
+                        title = cleanText(title),
+                        webpageUrl = url,
+                        uploader = "TikTok",
+                        thumbnail = carouselItems.firstOrNull()?.thumbnail.orEmpty(),
+                        items = carouselItems
+                    )
+                }
+
+                // Fallback to single image from og:image
+                val ogImage = extractMetaTag(html, "og:image")
+                    ?: extractMetaTag(html, "twitter:image")
+                if (!ogImage.isNullOrBlank()) {
+                    val cleanImg = decodeHtmlEntities(ogImage).replace("&amp;", "&")
+                    return ExtractedMedia.Image(
+                        id = "tiktok_" + UUID.randomUUID().toString().take(8),
+                        title = cleanText(title),
+                        webpageUrl = url,
+                        directDownloadUrl = cleanImg,
+                        thumbnail = cleanImg,
+                        mimeType = "image/jpeg",
+                        uploader = "TikTok"
+                    )
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLogger.d("PageMetadataExtractor", "TikTok extraction error: ${e.message}")
+        }
+        return null
+    }
+
+    private fun extractTikTokCarouselItems(html: String): List<CarouselItem> {
+        val items = mutableListOf<CarouselItem>()
+        try {
+            val pattern = Pattern.compile("\"displayImage\"\\s*:\\s*\\{\\s*\"urlList\"\\s*:\\s*(\\[.*?\\])", Pattern.DOTALL)
+            val matcher = pattern.matcher(html)
+            var idx = 1
+            while (matcher.find()) {
+                val urlsJson = matcher.group(1) ?: continue
+                val jsonArr = JSONArray(urlsJson)
+                val firstUrl = jsonArr.optString(0, "")
+                if (firstUrl.isNotBlank()) {
+                    val cleanUrl = firstUrl.replace("&amp;", "&")
+                    items.add(
+                        CarouselItem(
+                            id = "tiktok_img_$idx",
+                            title = "Photo #$idx",
+                            mediaType = MediaType.IMAGE,
+                            sourceUrl = cleanUrl,
+                            thumbnail = cleanUrl,
+                            mimeType = "image/jpeg"
+                        )
+                    )
+                    idx++
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.d("PageMetadataExtractor", "Error parsing TikTok carousel: ${e.message}")
+        }
+        return items
     }
 
     private fun extractRedditGalleryItems(html: String): List<CarouselItem> {

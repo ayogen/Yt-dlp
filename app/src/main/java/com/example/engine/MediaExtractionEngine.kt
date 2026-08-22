@@ -66,7 +66,13 @@ class MediaExtractionEngine(private val context: Context) {
 
                 val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
 
-                val metadata = when (directInspection.mediaType) {
+                val resolvedType = MediaTypeResolver.resolveMediaType(
+                    url = canonicalUrl,
+                    mimeType = directInspection.mimeType,
+                    classification = classification
+                )
+
+                val metadata = when (resolvedType) {
                     MediaType.IMAGE -> {
                         MediaMetadata(
                             id = "direct_img_" + UUID.randomUUID().toString().take(8),
@@ -123,7 +129,7 @@ class MediaExtractionEngine(private val context: Context) {
                     }
                 }
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                return@withContext Result.success(metadata)
+                return@withContext Result.success(MediaTypeResolver.sanitizeMetadata(metadata))
             } else {
                 AppLogger.i("MediaExtractionEngine", "Direct inspection completed")
             }
@@ -146,7 +152,8 @@ class MediaExtractionEngine(private val context: Context) {
                     is ExtractedMedia.Image, is ExtractedMedia.Carousel -> {
                         AppLogger.i("MediaExtractionEngine", "Page metadata completed: Extracted ${pageMedia.javaClass.simpleName}")
                         AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                        return@withContext Result.success(pageMedia.toMediaMetadata())
+                        val meta = MediaTypeResolver.sanitizeMetadata(pageMedia.toMediaMetadata())
+                        return@withContext Result.success(meta)
                     }
                     else -> {
                         AppLogger.i("MediaExtractionEngine", "Page metadata completed")
@@ -200,12 +207,7 @@ class MediaExtractionEngine(private val context: Context) {
 
             if (ytDlpResult != null && ytDlpResult.isSuccess) {
                 val meta = ytDlpResult.getOrThrow()
-                val refinedMeta = when {
-                    meta.isPlaylist -> meta.copy(mediaType = MediaType.PLAYLIST)
-                    meta.formats.isNotEmpty() && meta.formats.all { it.isAudioOnly } || meta.extractorName.equals("soundcloud", ignoreCase = true) ->
-                        meta.copy(mediaType = MediaType.AUDIO)
-                    else -> meta.copy(mediaType = MediaType.VIDEO)
-                }
+                val refinedMeta = MediaTypeResolver.sanitizeMetadata(meta)
                 AppLogger.i("MediaExtractionEngine", "yt-dlp completed")
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
                 return@withContext Result.success(refinedMeta)

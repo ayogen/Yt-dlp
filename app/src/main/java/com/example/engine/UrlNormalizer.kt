@@ -50,13 +50,31 @@ object UrlNormalizer {
             return rewritten
         }
 
-        // 2. Facebook share URLs or redirect domains: follow the HTTP redirect chain to get the real canonical URL
+        // 2. Reddit media URL parameter unwrapping (e.g. https://www.reddit.com/media?url=https%3A%2F%2Fi.redd.it%2F...)
+        if (normalized.contains("reddit.com/media") && normalized.contains("url=")) {
+            try {
+                val queryParam = normalized.substringAfter("url=").substringBefore("&")
+                val decoded = java.net.URLDecoder.decode(queryParam, "UTF-8")
+                if (decoded.startsWith("http://", ignoreCase = true) || decoded.startsWith("https://", ignoreCase = true)) {
+                    AppLogger.i("UrlNormalizer", "Unwrapped Reddit media parameter URL: $decoded")
+                    return decoded
+                }
+            } catch (e: Exception) {
+                AppLogger.w("UrlNormalizer", "Failed to unwrap Reddit media URL: ${e.message}")
+            }
+        }
+
+        // 3. Platform share URLs or redirect domains: follow the HTTP redirect chain to get the real canonical URL
         val lower = normalized.lowercase()
         val isRedirectLink = lower.contains("fb.watch/") ||
                 lower.contains("facebook.com/share/") ||
                 lower.contains("m.facebook.com/share/") ||
                 lower.contains("vm.tiktok.com/") ||
                 lower.contains("vt.tiktok.com/") ||
+                lower.contains("tiktok.com/t/") ||
+                lower.contains("reddit.com/r/") && lower.contains("/s/") ||
+                lower.contains("redd.it/") ||
+                lower.contains("pin.it/") ||
                 lower.contains("youtu.be/") ||
                 lower.contains("tinyurl.com/") ||
                 lower.contains("bit.ly/") ||

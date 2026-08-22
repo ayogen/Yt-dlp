@@ -39,11 +39,16 @@ object EmbeddedExtractorEngine {
                 return@withContext extractDirectMediaMetadata(validatedUrl)
             }
 
-            // Extract webpage HTML to obtain OpenGraph and meta tags without fake numbers
+            // Extract webpage HTML to obtain OpenGraph and meta tags only if a real stream exists
             val htmlContent = fetchWebpage(validatedUrl)
-            val metadata = parseWebpageMetadata(validatedUrl, host, htmlContent)
-            AppLogger.i("EmbeddedExtractor", "Extracted web page metadata for: ${metadata.title}")
-            Result.success(metadata)
+            val metadataResult = parseWebpageMetadata(validatedUrl, host, htmlContent)
+            if (metadataResult.isSuccess) {
+                val metadata = metadataResult.getOrThrow()
+                AppLogger.i("EmbeddedExtractor", "Extracted web page metadata for: ${metadata.title}")
+                Result.success(metadata)
+            } else {
+                metadataResult
+            }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             AppLogger.e("EmbeddedExtractor", "Extraction failed: ${e.message}")
@@ -160,7 +165,17 @@ object EmbeddedExtractorEngine {
         }
     }
 
-    private fun parseWebpageMetadata(url: String, host: String, html: String): MediaMetadata {
+    private fun parseWebpageMetadata(url: String, host: String, html: String): Result<MediaMetadata> {
+        val videoUrl = extractTag(html, "property=\"og:video:secure_url\" content=\"([^\"]+)\"")
+            ?: extractTag(html, "property=\"og:video\" content=\"([^\"]+)\"")
+            ?: extractTag(html, "property=\"og:video:url\" content=\"([^\"]+)\"")
+            ?: extractTag(html, "name=\"twitter:player:stream\" content=\"([^\"]+)\"")
+
+        // Only succeed if there is an actual stream URL that is distinct from the HTML webpage
+        if (videoUrl.isNullOrBlank() || videoUrl.equals(url, ignoreCase = true)) {
+            return Result.failure(Exception("No downloadable media streams found on this webpage"))
+        }
+
         val ogTitle = extractTag(html, "property=\"og:title\" content=\"([^\"]+)\"")
             ?: extractTag(html, "<title>([^<]+)</title>")
             ?: "Media ($host)"
@@ -173,34 +188,31 @@ object EmbeddedExtractorEngine {
             ?: extractTag(html, "name=\"description\" content=\"([^\"]+)\"")
             ?: ""
 
-        val videoUrl = extractTag(html, "property=\"og:video\" content=\"([^\"]+)\"")
-            ?: extractTag(html, "property=\"og:video:url\" content=\"([^\"]+)\"")
-            ?: extractTag(html, "property=\"og:video:secure_url\" content=\"([^\"]+)\"")
-            ?: url
-
-        return MediaMetadata(
-            id = Math.abs(url.hashCode()).toString(),
-            title = sanitizeTitle(ogTitle),
-            webpageUrl = url,
-            uploader = host,
-            durationSeconds = 0L,
-            viewCount = null,
-            likeCount = null,
-            uploadDate = "",
-            description = ogDesc,
-            thumbnail = ogImage,
-            formats = listOf(
-                FormatInfo(
-                    formatId = "embedded-best",
-                    ext = "mp4",
-                    resolution = "Web Stream",
-                    vcodec = "h264",
-                    acodec = "aac",
-                    url = videoUrl
-                )
-            ),
-            extractorName = "GenericWebExtractor",
-            directDownloadUrl = videoUrl
+        return Result.success(
+            MediaMetadata(
+                id = Math.abs(url.hashCode()).toString(),
+                title = sanitizeTitle(ogTitle),
+                webpageUrl = url,
+                uploader = host,
+                durationSeconds = 0L,
+                viewCount = null,
+                likeCount = null,
+                uploadDate = "",
+                description = ogDesc,
+                thumbnail = ogImage,
+                formats = listOf(
+                    FormatInfo(
+                        formatId = "embedded-best",
+                        ext = "mp4",
+                        resolution = "Direct Stream",
+                        vcodec = "h264",
+                        acodec = "aac",
+                        url = videoUrl
+                    )
+                ),
+                extractorName = "GenericWebExtractor",
+                directDownloadUrl = videoUrl
+            )
         )
     }
 
