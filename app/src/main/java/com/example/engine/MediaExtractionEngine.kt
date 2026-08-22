@@ -142,11 +142,13 @@ class MediaExtractionEngine(private val context: Context) {
 
             // Stage 2: Page Metadata Extraction (DOM / OpenGraph / Carousel / Photo detection)
             AppLogger.i("MediaExtractionEngine", "Page metadata extraction started")
+            val startTimePageMeta = System.currentTimeMillis()
             MediaExtractionTracer.logExtractorAttempt(
                 traceId = effectiveTraceId,
-                stage = "PAGE_METADATA_EXTRACTION",
-                extractor = "PageMetadataExtractor",
-                url = canonicalUrl
+                extractorName = "PageMetadataExtractor",
+                eligible = true,
+                reason = "Extracting social / OpenGraph / carousel metadata",
+                details = mapOf("url" to canonicalUrl, "stage" to "PAGE_METADATA_EXTRACTION")
             )
             val pageMedia = try {
                 withTimeoutOrNull(6000L) {
@@ -160,13 +162,17 @@ class MediaExtractionEngine(private val context: Context) {
             }
 
             if (pageMedia != null) {
+                val durationPageMeta = System.currentTimeMillis() - startTimePageMeta
+                val pageMetaObj = pageMedia.toMediaMetadata()
                 MediaExtractionTracer.logExtractorResult(
                     traceId = effectiveTraceId,
-                    stage = "PAGE_METADATA_EXTRACTION",
-                    extractor = "PageMetadataExtractor",
-                    success = true,
-                    mediaType = pageMedia.toMediaMetadata().mediaType.name,
-                    title = pageMedia.toMediaMetadata().title
+                    extractorName = "PageMetadataExtractor",
+                    isSuccess = true,
+                    durationMs = durationPageMeta,
+                    resultSummary = "${pageMetaObj.mediaType}: ${pageMetaObj.title}",
+                    reason = "Extracted media via PageMetadataExtractor",
+                    candidateCount = if (pageMedia is ExtractedMedia.Carousel) pageMedia.items.size else 1,
+                    details = mapOf("mediaType" to pageMetaObj.mediaType.name, "title" to pageMetaObj.title)
                 )
                 when (pageMedia) {
                     is ExtractedMedia.Image, is ExtractedMedia.Carousel -> {
@@ -180,12 +186,15 @@ class MediaExtractionEngine(private val context: Context) {
                     }
                 }
             } else {
+                val durationPageMeta = System.currentTimeMillis() - startTimePageMeta
                 MediaExtractionTracer.logExtractorResult(
                     traceId = effectiveTraceId,
-                    stage = "PAGE_METADATA_EXTRACTION",
-                    extractor = "PageMetadataExtractor",
-                    success = false,
-                    reason = "No static image or carousel metadata found on page"
+                    extractorName = "PageMetadataExtractor",
+                    isSuccess = false,
+                    durationMs = durationPageMeta,
+                    resultSummary = null,
+                    reason = "No static image or carousel metadata found on page",
+                    candidateCount = 0
                 )
                 AppLogger.i("MediaExtractionEngine", "Page metadata completed")
             }
@@ -197,13 +206,15 @@ class MediaExtractionEngine(private val context: Context) {
                 "[YtDlpEligibilityGate] eligible=${gateDecision.isEligible}, reason=${gateDecision.reason}"
             )
 
+            val startYtDlpTime = System.currentTimeMillis()
             val ytDlpResult = if (gateDecision.isEligible) {
                 AppLogger.i("MediaExtractionEngine", "yt-dlp extraction started")
                 MediaExtractionTracer.logExtractorAttempt(
                     traceId = effectiveTraceId,
-                    stage = "YTDLP_CLI_EXTRACTION",
-                    extractor = "YtDlpProcessRunner",
-                    url = canonicalUrl
+                    extractorName = "YtDlpProcessRunner",
+                    eligible = true,
+                    reason = gateDecision.reason,
+                    details = mapOf("url" to canonicalUrl, "stage" to "YTDLP_CLI_EXTRACTION")
                 )
                 val binary = YtDlpBinaryManager.getBinaryFile(context)
                 val binaryPath = binary?.absolutePath ?: "yt-dlp"
@@ -237,9 +248,9 @@ class MediaExtractionEngine(private val context: Context) {
             } else {
                 MediaExtractionTracer.logExtractorSkipped(
                     traceId = effectiveTraceId,
-                    stage = "YTDLP_CLI_EXTRACTION",
-                    extractor = "YtDlpProcessRunner",
-                    reason = gateDecision.reason
+                    extractorName = "YtDlpProcessRunner",
+                    reason = gateDecision.reason,
+                    details = mapOf("stage" to "YTDLP_CLI_EXTRACTION")
                 )
                 AppLogger.i("MediaExtractionEngine", "yt-dlp extraction skipped: ${gateDecision.reason}")
                 null
@@ -248,13 +259,16 @@ class MediaExtractionEngine(private val context: Context) {
             if (ytDlpResult != null && ytDlpResult.isSuccess) {
                 val meta = ytDlpResult.getOrThrow()
                 val refinedMeta = MediaTypeResolver.sanitizeMetadata(meta, effectiveTraceId)
+                val durationYtDlp = System.currentTimeMillis() - startYtDlpTime
                 MediaExtractionTracer.logExtractorResult(
                     traceId = effectiveTraceId,
-                    stage = "YTDLP_CLI_EXTRACTION",
-                    extractor = "YtDlpProcessRunner",
-                    success = true,
-                    mediaType = refinedMeta.mediaType.name,
-                    title = refinedMeta.title
+                    extractorName = "YtDlpProcessRunner",
+                    isSuccess = true,
+                    durationMs = durationYtDlp,
+                    resultSummary = "${refinedMeta.mediaType}: ${refinedMeta.title}",
+                    reason = "yt-dlp extracted media successfully",
+                    candidateCount = refinedMeta.formats.size.coerceAtLeast(1),
+                    details = mapOf("mediaType" to refinedMeta.mediaType.name, "title" to refinedMeta.title)
                 )
                 AppLogger.i("MediaExtractionEngine", "yt-dlp completed")
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
@@ -267,12 +281,15 @@ class MediaExtractionEngine(private val context: Context) {
                 "Skipped: ${gateDecision.reason}"
             }
             if (gateDecision.isEligible) {
+                val durationYtDlp = System.currentTimeMillis() - startYtDlpTime
                 MediaExtractionTracer.logExtractorResult(
                     traceId = effectiveTraceId,
-                    stage = "YTDLP_CLI_EXTRACTION",
-                    extractor = "YtDlpProcessRunner",
-                    success = false,
-                    reason = ytDlpError
+                    extractorName = "YtDlpProcessRunner",
+                    isSuccess = false,
+                    durationMs = durationYtDlp,
+                    resultSummary = null,
+                    reason = ytDlpError,
+                    error = ytDlpResult?.exceptionOrNull()
                 )
             }
             AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError")
@@ -280,9 +297,9 @@ class MediaExtractionEngine(private val context: Context) {
             // Stage 4: Embedded extractor & Generic OpenGraph fallback
             MediaExtractionTracer.logFallbackStarted(
                 traceId = effectiveTraceId,
-                stage = "FALLBACK_STAGE",
+                fallbackStage = "FALLBACK_STAGE",
                 reason = "Primary extractors did not return media, testing OpenGraph / Embedded extractors",
-                previousStage = "YTDLP_CLI_EXTRACTION"
+                details = mapOf("previousStage" to "YTDLP_CLI_EXTRACTION")
             )
 
             if (pageMedia != null) {
