@@ -217,4 +217,110 @@ object EmbeddedExtractorEngine {
             .replace("&gt;", ">")
             .trim()
     }
+
+    suspend fun downloadDirectStream(
+        taskId: String,
+        url: String,
+        destinationFile: File,
+        targetTotalBytes: Long? = null,
+        onProgress: (progress: Float, downloadedBytes: Long, totalBytes: Long, speedBytesPerSec: Double, etaSeconds: Long) -> Unit,
+        isCancelled: () -> Boolean,
+        isPaused: () -> Boolean
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            if (isCancelled()) {
+                return@withContext Result.failure(CancellationException("Download cancelled"))
+            }
+
+            destinationFile.parentFile?.mkdirs()
+            var existingLength = 0L
+            if (destinationFile.exists()) {
+                existingLength = destinationFile.length()
+            }
+
+            val requestBuilder = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+            if (existingLength > 0L) {
+                requestBuilder.header("Range", "bytes=$existingLength-")
+            }
+
+            val response = CancellableNetworkClient.executeCancellable(client, requestBuilder.build())
+            if (!response.isSuccessful && response.code != 206) {
+                response.close()
+                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+            }
+
+            val isPartial = response.code == 206
+            val responseBody = response.body ?: return@withContext Result.failure(Exception("Empty response body"))
+            val streamLength = responseBody.contentLength()
+            val totalBytes = if (isPartial) {
+                existingLength + if (streamLength > 0) streamLength else (targetTotalBytes ?: 0L)
+            } else {
+                if (streamLength > 0) streamLength else (targetTotalBytes ?: 0L)
+            }
+
+            val raf = RandomAccessFile(destinationFile, "rw")
+            if (isPartial) {
+                raf.seek(existingLength)
+            } else {
+                raf.setLength(0)
+                existingLength = 0L
+            }
+
+            var downloadedBytes = existingLength
+            val buffer = ByteArray(64 * 1024)
+            var lastTime = System.currentTimeMillis()
+            var bytesSinceLastTime = 0L
+            var currentSpeed = 0.0
+
+            responseBody.byteStream().use { input ->
+                raf.use { output ->
+                    while (true) {
+                        if (isCancelled()) {
+                            return@withContext Result.failure(CancellationException("Download cancelled"))
+                        }
+                        while (isPaused()) {
+                            if (isCancelled()) {
+                                return@withContext Result.failure(CancellationException("Download cancelled"))
+                            }
+                            kotlinx.coroutines.delay(200)
+                        }
+
+                        val read = input.read(buffer)
+                        if (read == -1) break
+
+                        output.write(buffer, 0, read)
+                        downloadedBytes += read
+                        bytesSinceLastTime += read
+
+                        val now = System.currentTimeMillis()
+                        val diff = now - lastTime
+                        if (diff >= 500) {
+                            currentSpeed = (bytesSinceLastTime * 1000.0) / diff
+                            lastTime = now
+                            bytesSinceLastTime = 0L
+
+                            val progress = if (totalBytes > 0) {
+                                (downloadedBytes.toFloat() / totalBytes.toFloat()) * 100f
+                            } else 0f
+
+                            val remainingBytes = if (totalBytes > downloadedBytes) totalBytes - downloadedBytes else 0L
+                            val eta = if (currentSpeed > 0) (remainingBytes / currentSpeed).toLong() else 0L
+
+                            onProgress(progress, downloadedBytes, totalBytes, currentSpeed, eta)
+                        }
+                    }
+                }
+            }
+
+            val finalProgress = if (totalBytes > 0) 100f else 0f
+            onProgress(finalProgress, downloadedBytes, totalBytes, 0.0, 0L)
+            Result.success(destinationFile.absolutePath)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Result.failure(e)
+        }
+    }
 }
