@@ -7,9 +7,12 @@ enum class MediaIntent {
     DIRECT_MEDIA,       // Direct file links (.jpg, .mp4, .mp3, etc.)
     PLATFORM_VIDEO,     // YouTube, TikTok /video/, Reddit v.redd.it, Instagram /reel/
     PLATFORM_AUDIO,     // SoundCloud, audio-only platforms
-    PLATFORM_IMAGE,     // Single image post endpoints
-    PLATFORM_CAROUSEL,  // TikTok /photo/, Reddit /gallery/, Instagram /p/ sidecar
-    GENERIC_WEBPAGE,    // HTML webpages with unknown media composition
+    PLATFORM_IMAGE,     // Single image post endpoints (i.redd.it, Facebook photo)
+    PLATFORM_CAROUSEL,  // TikTok /photo/, Reddit /gallery/
+    PLATFORM_PAGE,      // Media platform container/post page (Reddit /comments/, Instagram /p/, Pinterest pin, Twitter/X post)
+    MEDIA_CONTAINER,    // Webpage container known to embed media
+    UNKNOWN_MEDIA_PAGE, // Webpage with potential media streams
+    GENERIC_WEBPAGE,    // Normal HTML webpages (documentation, search, login, articles)
     UNKNOWN             // Unrecognized URL patterns
 }
 
@@ -25,8 +28,8 @@ data class SemanticClassification(
 
 /**
  * Central semantic classifier and router.
- * Evaluates URLs prior to engine dispatch to prevent non-video/photo/gallery
- * endpoints from being misrouted to yt-dlp.
+ * Evaluates URLs prior to engine dispatch to identify platform intent
+ * and determine preliminary extractor eligibility without prematurely terminating the pipeline.
  */
 object SemanticClassifier {
 
@@ -66,7 +69,7 @@ object SemanticClassifier {
             val res = SemanticClassification(
                 intent = MediaIntent.DIRECT_MEDIA,
                 platform = "direct",
-                isYtDlpEligible = false, // Direct media handled by DirectMediaInspector / ImageDownloader
+                isYtDlpEligible = false, // Direct media handled by DirectMediaInspector / Direct downloader
                 reason = if (isImage) "Direct image file extension" else if (isAudio) "Direct audio file extension" else "Direct video file extension"
             )
             recordResult(effectiveTraceId, opId, res)
@@ -80,7 +83,7 @@ object SemanticClassifier {
                     intent = MediaIntent.PLATFORM_CAROUSEL,
                     platform = "tiktok",
                     isYtDlpEligible = false,
-                    reason = "TikTok /photo/ endpoint represents static images/slideshow (NOT eligible for yt-dlp)"
+                    reason = "TikTok /photo/ endpoint represents static images/slideshow (handled by page metadata extractor)"
                 )
                 lower.contains("/video/") || lower.contains("/v/") -> SemanticClassification(
                     intent = MediaIntent.PLATFORM_VIDEO,
@@ -89,10 +92,10 @@ object SemanticClassifier {
                     reason = "TikTok /video/ endpoint is a streamable video (yt-dlp eligible)"
                 )
                 else -> SemanticClassification(
-                    intent = MediaIntent.GENERIC_WEBPAGE,
+                    intent = MediaIntent.PLATFORM_PAGE,
                     platform = "tiktok",
-                    isYtDlpEligible = true, // Unresolved short link or generic TikTok page
-                    reason = "TikTok general page"
+                    isYtDlpEligible = true,
+                    reason = "TikTok platform page may contain video or carousel; yt-dlp is allowed as an extraction strategy"
                 )
             }
             recordResult(effectiveTraceId, opId, res)
@@ -112,52 +115,64 @@ object SemanticClassifier {
                     intent = MediaIntent.PLATFORM_IMAGE,
                     platform = "reddit",
                     isYtDlpEligible = false,
-                    reason = "Reddit i.redd.it static image host (NOT eligible for yt-dlp)"
+                    reason = "Reddit i.redd.it static image host (handled by direct image downloader)"
                 )
                 lower.contains("/gallery/") -> SemanticClassification(
                     intent = MediaIntent.PLATFORM_CAROUSEL,
                     platform = "reddit",
                     isYtDlpEligible = false,
-                    reason = "Reddit /gallery/ multi-image post (NOT eligible for yt-dlp)"
+                    reason = "Reddit /gallery/ multi-image post (handled by page metadata extractor)"
                 )
                 else -> SemanticClassification(
-                    intent = MediaIntent.GENERIC_WEBPAGE,
+                    intent = MediaIntent.PLATFORM_PAGE,
                     platform = "reddit",
-                    isYtDlpEligible = false, // Post pages must be inspected via PageMetadataExtractor first
-                    reason = "Reddit comments/post page requires page metadata inspection before engine selection"
+                    isYtDlpEligible = true,
+                    reason = "Reddit post page may contain downloadable media; yt-dlp is allowed as an extraction strategy"
                 )
             }
             recordResult(effectiveTraceId, opId, res)
             return res
         }
 
-        // 4. Instagram
+        // 4. Pinterest
+        if (lower.contains("pinterest.com") || lower.contains("pin.it")) {
+            val res = SemanticClassification(
+                intent = MediaIntent.PLATFORM_PAGE,
+                platform = "pinterest",
+                isYtDlpEligible = true,
+                reason = "Pinterest pin page may contain video or image; yt-dlp is allowed as an extraction strategy"
+            )
+            recordResult(effectiveTraceId, opId, res)
+            return res
+        }
+
+        // 5. Instagram
         if (lower.contains("instagram.com") || lower.contains("instagr.am")) {
             val res = when {
-                lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") -> SemanticClassification(
+                lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") || lower.contains("/stories/") -> SemanticClassification(
                     intent = MediaIntent.PLATFORM_VIDEO,
                     platform = "instagram",
                     isYtDlpEligible = true,
-                    reason = "Instagram Reel/TV video endpoint (yt-dlp eligible)"
+                    reason = "Instagram Reel/TV/Story video endpoint (yt-dlp eligible)"
                 )
                 lower.contains("/p/") -> SemanticClassification(
-                    intent = MediaIntent.GENERIC_WEBPAGE,
+                    intent = MediaIntent.PLATFORM_PAGE,
                     platform = "instagram",
-                    isYtDlpEligible = false, // Instagram /p/ can be photo, carousel, or video. Inspect via PageMetadata first!
-                    reason = "Instagram /p/ post may be image, carousel, or video (inspect page metadata first)"
+                    isYtDlpEligible = true,
+                    reason = "Instagram /p/ post may be image, carousel, or video; yt-dlp is allowed as an extraction strategy"
                 )
                 else -> SemanticClassification(
-                    intent = MediaIntent.GENERIC_WEBPAGE,
+                    intent = MediaIntent.PLATFORM_PAGE,
                     platform = "instagram",
-                    isYtDlpEligible = false,
-                    reason = "Instagram generic endpoint"
+                    isYtDlpEligible = true,
+                    reason = "Instagram platform endpoint (yt-dlp allowed as an extraction strategy)"
                 )
             }
             recordResult(effectiveTraceId, opId, res)
             return res
         }
 
-        // 5. YouTube
+        // 6. YouTube
         if (lower.contains("youtube.com") || lower.contains("youtu.be")) {
             val res = SemanticClassification(
                 intent = MediaIntent.PLATFORM_VIDEO,
@@ -169,10 +184,10 @@ object SemanticClassifier {
             return res
         }
 
-        // 6. Facebook
+        // 7. Facebook
         if (lower.contains("facebook.com") || lower.contains("fb.watch")) {
             val res = when {
-                lower.contains("/watch") || lower.contains("/reel") || lower.contains("/videos") -> SemanticClassification(
+                lower.contains("/watch") || lower.contains("/reel") || lower.contains("/videos") || lower.contains("fb.watch") -> SemanticClassification(
                     intent = MediaIntent.PLATFORM_VIDEO,
                     platform = "facebook",
                     isYtDlpEligible = true,
@@ -182,32 +197,32 @@ object SemanticClassifier {
                     intent = MediaIntent.PLATFORM_IMAGE,
                     platform = "facebook",
                     isYtDlpEligible = false,
-                    reason = "Facebook photo post (NOT eligible for yt-dlp)"
+                    reason = "Facebook photo post (handled by page metadata extractor)"
                 )
                 else -> SemanticClassification(
-                    intent = MediaIntent.GENERIC_WEBPAGE,
+                    intent = MediaIntent.PLATFORM_PAGE,
                     platform = "facebook",
                     isYtDlpEligible = true,
-                    reason = "Facebook generic post/link"
+                    reason = "Facebook post/page may contain video; yt-dlp is allowed as an extraction strategy"
                 )
             }
             recordResult(effectiveTraceId, opId, res)
             return res
         }
 
-        // 7. X / Twitter
+        // 8. X / Twitter
         if (lower.contains("twitter.com") || lower.contains("x.com")) {
             val res = SemanticClassification(
-                intent = MediaIntent.GENERIC_WEBPAGE,
+                intent = MediaIntent.PLATFORM_PAGE,
                 platform = "twitter",
                 isYtDlpEligible = true,
-                reason = "Twitter/X post (may contain video, audio, or image)"
+                reason = "Twitter/X post may contain video or image (yt-dlp eligible)"
             )
             recordResult(effectiveTraceId, opId, res)
             return res
         }
 
-        // 8. Dedicated Audio Platforms (SoundCloud, Bandcamp, Mixcloud)
+        // 9. Dedicated Audio Platforms (SoundCloud, Bandcamp, Mixcloud)
         if (lower.contains("soundcloud.com") || lower.contains("bandcamp.com") || lower.contains("mixcloud.com")) {
             val res = SemanticClassification(
                 intent = MediaIntent.PLATFORM_AUDIO,
@@ -219,12 +234,26 @@ object SemanticClassifier {
             return res
         }
 
-        // 9. Generic Webpages / Other yt-dlp supported domains
+        // 10. Other supported video hosts (Vimeo, Dailymotion, Rumble, Bilibili, Twitch, etc.)
+        if (lower.contains("vimeo.com") || lower.contains("dailymotion.com") || lower.contains("rumble.com") ||
+            lower.contains("bilibili.com") || lower.contains("twitch.tv") || lower.contains("streamable.com")
+        ) {
+            val res = SemanticClassification(
+                intent = MediaIntent.PLATFORM_VIDEO,
+                platform = "video_host",
+                isYtDlpEligible = true,
+                reason = "Known video streaming host (yt-dlp eligible)"
+            )
+            recordResult(effectiveTraceId, opId, res)
+            return res
+        }
+
+        // 11. Generic Webpages (Protected from blind yt-dlp execution)
         val res = SemanticClassification(
             intent = MediaIntent.GENERIC_WEBPAGE,
             platform = "generic",
-            isYtDlpEligible = true, // Allowed as generic fallback if page inspection yields no non-video media
-            reason = "Generic webpage (eligible for yt-dlp only after page metadata inspection)"
+            isYtDlpEligible = false,
+            reason = "Generic webpage (protected against blind yt-dlp execution; inspected via page metadata first)"
         )
         recordResult(effectiveTraceId, opId, res)
         return res

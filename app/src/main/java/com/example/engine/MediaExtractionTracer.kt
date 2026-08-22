@@ -432,6 +432,123 @@ object MediaExtractionTracer {
         )
     }
 
+    fun logRoutingDecision(
+        traceId: String,
+        stage: String,
+        decision: String,
+        reason: String,
+        details: Map<String, String> = emptyMap()
+    ) {
+        logEvent(
+            traceId = traceId,
+            component = "RoutingManager",
+            stage = "ROUTING_DECISION",
+            event = stage,
+            level = TraceLevel.INFO,
+            decision = decision,
+            reason = reason,
+            details = details + mapOf("routingStage" to stage, "decision" to decision, "reason" to reason)
+        )
+    }
+
+    fun logExtractorAttempt(
+        traceId: String,
+        extractorName: String,
+        eligible: Boolean,
+        reason: String,
+        details: Map<String, String> = emptyMap()
+    ) {
+        logEvent(
+            traceId = traceId,
+            component = extractorName,
+            stage = "EXTRACTOR_ATTEMPT",
+            event = "ATTEMPT_$extractorName",
+            level = TraceLevel.INFO,
+            decision = if (eligible) "ATTEMPTED" else "SKIPPED",
+            reason = reason,
+            details = details + mapOf(
+                "extractorName" to extractorName,
+                "attempted" to "true",
+                "eligibility" to eligible.toString(),
+                "reason" to reason
+            )
+        )
+    }
+
+    fun logExtractorSkipped(
+        traceId: String,
+        extractorName: String,
+        reason: String,
+        details: Map<String, String> = emptyMap()
+    ) {
+        logEvent(
+            traceId = traceId,
+            component = extractorName,
+            stage = "EXTRACTOR_SKIPPED",
+            event = "SKIPPED_$extractorName",
+            level = TraceLevel.INFO,
+            decision = "SKIPPED",
+            reason = reason,
+            details = details + mapOf(
+                "extractorName" to extractorName,
+                "attempted" to "false",
+                "eligibility" to "false",
+                "reason" to reason
+            )
+        )
+    }
+
+    fun logExtractorResult(
+        traceId: String,
+        extractorName: String,
+        isSuccess: Boolean,
+        durationMs: Long,
+        resultSummary: String?,
+        reason: String?,
+        candidateCount: Int = 0,
+        error: Throwable? = null,
+        details: Map<String, String> = emptyMap()
+    ) {
+        val stageName = if (isSuccess) "EXTRACTOR_SUCCESS" else "EXTRACTOR_FAILED"
+        logEvent(
+            traceId = traceId,
+            component = extractorName,
+            stage = stageName,
+            event = "${stageName}_$extractorName",
+            level = if (isSuccess) TraceLevel.INFO else TraceLevel.WARNING,
+            output = resultSummary,
+            decision = if (isSuccess) "SUCCESS" else "FAILED",
+            reason = reason ?: (if (isSuccess) "Extraction succeeded" else "Extraction failed"),
+            error = error?.message ?: error?.toString(),
+            durationMs = durationMs,
+            details = details + mapOf(
+                "extractorName" to extractorName,
+                "isSuccess" to isSuccess.toString(),
+                "durationMs" to durationMs.toString(),
+                "candidateCount" to candidateCount.toString(),
+                "result" to (resultSummary ?: "null")
+            )
+        )
+    }
+
+    fun logFallbackStarted(
+        traceId: String,
+        fallbackStage: String,
+        reason: String,
+        details: Map<String, String> = emptyMap()
+    ) {
+        logEvent(
+            traceId = traceId,
+            component = "FallbackRouter",
+            stage = "FALLBACK_STARTED",
+            event = "START_$fallbackStage",
+            level = TraceLevel.INFO,
+            decision = "FALLBACK_TRIGGERED",
+            reason = reason,
+            details = details + mapOf("fallbackStage" to fallbackStage, "reason" to reason)
+        )
+    }
+
     fun recordFFmpegOutput(traceId: String, output: String?) {
         val session = sessions[traceId] ?: return
         if (!output.isNullOrBlank()) session.ffmpegOutput = output.take(4000)
