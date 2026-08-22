@@ -21,8 +21,17 @@ class YtDlpEngine(private val context: Context) {
 
     private val extractionEngine = MediaExtractionEngine(context)
 
-    suspend fun analyzeUrl(url: String, settings: AppSettings): Result<MediaMetadata> = withContext(Dispatchers.IO) {
-        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
+    suspend fun analyzeUrl(url: String, settings: AppSettings, traceId: String? = null): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.startSession(url).traceId
+        val opId = MediaExtractionTracer.startOperation(
+            traceId = effectiveTraceId,
+            component = "YtDlpEngine",
+            stage = "ANALYZE_URL",
+            name = "analyzeUrl",
+            details = mapOf("url" to url)
+        )
+
+        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url, effectiveTraceId)
         AppLogger.i("YtDlpEngine", "Starting universal media analysis for: $resolvedUrl (original: $url)")
 
         // Ensure yt-dlp runtime is initialized in background
@@ -30,13 +39,38 @@ class YtDlpEngine(private val context: Context) {
 
         val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
 
-        extractionEngine.extractMedia(
+        val result = extractionEngine.extractMedia(
             url = resolvedUrl,
             cookiesFile = cookiesFile,
             userAgent = null,
             proxyUrl = null,
-            geoBypass = true
+            geoBypass = true,
+            traceId = effectiveTraceId
         )
+
+        if (result.isSuccess) {
+            val meta = result.getOrNull()
+            MediaExtractionTracer.endOperation(
+                traceId = effectiveTraceId,
+                opId = opId,
+                result = meta?.title,
+                decision = "SUCCESS",
+                reason = "Successfully extracted media metadata"
+            )
+            MediaExtractionTracer.completeSession(effectiveTraceId, meta)
+        } else {
+            val err = result.exceptionOrNull()
+            MediaExtractionTracer.endOperation(
+                traceId = effectiveTraceId,
+                opId = opId,
+                error = err,
+                decision = "FAILURE",
+                reason = err?.message
+            )
+            MediaExtractionTracer.failSession(effectiveTraceId, err?.message ?: "Unknown extraction error")
+        }
+
+        result
     }
 
     suspend fun executeDownload(
@@ -104,7 +138,7 @@ class YtDlpEngine(private val context: Context) {
             if (validation.isFailure) {
                 val err = validation.exceptionOrNull() ?: Exception("Media validation failed")
                 AppLogger.e("YtDlpEngine", "Downloaded file validation failed: ${err.message}", taskId)
-                try { completedFile.delete() } catch (e: Exception) {}
+                try { completedFile.delete() } catch (_: Exception) {}
                 return Result.failure(err)
             }
 
@@ -149,7 +183,7 @@ class YtDlpEngine(private val context: Context) {
             if (cliResult.isFailure && task.embedThumbnail && !isCancelled()) {
                 val failureMsg = cliResult.exceptionOrNull()?.message ?: ""
                 AppLogger.w("YtDlpEngine", "Initial download attempt with thumbnail embedding failed ($failureMsg). Retrying cleanly without thumbnail embedding...", taskId)
-                
+
                 cliResult = YtDlpProcessRunner.runDownloadCli(
                     taskId = taskId,
                     binaryPath = "",

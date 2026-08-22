@@ -24,11 +24,33 @@ object EmbeddedExtractorEngine {
         .followSslRedirects(true)
         .build()
 
-    suspend fun analyzeUrl(url: String): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+    suspend fun analyzeUrl(url: String, traceId: String? = null): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
+        val opId = if (effectiveTraceId != null) {
+            MediaExtractionTracer.startOperation(
+                traceId = effectiveTraceId,
+                component = "EmbeddedExtractorEngine",
+                stage = "EMBEDDED_EXTRACTOR",
+                name = "analyzeUrl",
+                details = mapOf("url" to url)
+            )
+        } else null
+
         try {
             AppLogger.i("EmbeddedExtractor", "Analyzing direct URL: $url")
             val validatedUrl = validateAndNormalizeUrl(url)
-                ?: return@withContext Result.failure(IllegalArgumentException("Invalid URL format. Please provide a valid HTTP/HTTPS address."))
+                ?: run {
+                    if (effectiveTraceId != null && opId != null) {
+                        MediaExtractionTracer.endOperation(
+                            traceId = effectiveTraceId,
+                            opId = opId,
+                            error = IllegalArgumentException("Invalid URL format"),
+                            decision = "INVALID_URL",
+                            reason = "Invalid URL format"
+                        )
+                    }
+                    return@withContext Result.failure(IllegalArgumentException("Invalid URL format. Please provide a valid HTTP/HTTPS address."))
+                }
 
             val uri = URL(validatedUrl)
             val host = uri.host.lowercase()
@@ -36,7 +58,17 @@ object EmbeddedExtractorEngine {
             // Check if URL is a direct media stream
             val isDirectMedia = isDirectMediaUrl(validatedUrl)
             if (isDirectMedia) {
-                return@withContext extractDirectMediaMetadata(validatedUrl)
+                val directRes = extractDirectMediaMetadata(validatedUrl)
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        result = directRes.getOrNull()?.title,
+                        decision = "DIRECT_STREAM_EXTRACTED",
+                        reason = "Extracted direct media stream metadata"
+                    )
+                }
+                return@withContext directRes
             }
 
             // Extract webpage HTML to obtain OpenGraph and meta tags only if a real stream exists
@@ -45,13 +77,39 @@ object EmbeddedExtractorEngine {
             if (metadataResult.isSuccess) {
                 val metadata = metadataResult.getOrThrow()
                 AppLogger.i("EmbeddedExtractor", "Extracted web page metadata for: ${metadata.title}")
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        result = metadata.title,
+                        decision = "WEBPAGE_METADATA_EXTRACTED",
+                        reason = "Extracted playable video stream from webpage"
+                    )
+                }
                 Result.success(metadata)
             } else {
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        decision = "NO_STREAM_FOUND",
+                        reason = metadataResult.exceptionOrNull()?.message ?: "No stream found"
+                    )
+                }
                 metadataResult
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             AppLogger.e("EmbeddedExtractor", "Extraction failed: ${e.message}")
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    error = e,
+                    decision = "EXTRACTION_FAILED",
+                    reason = e.message
+                )
+            }
             Result.failure(e)
         }
     }

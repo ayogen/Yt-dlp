@@ -33,56 +33,147 @@ object PageMetadataExtractor {
      * HTML meta tags, OpenGraph, JSON-LD, and platform-specific social DOM structures.
      * Supports coroutine cancellation.
      */
-    suspend fun extractPageMedia(url: String): ExtractedMedia? {
+    suspend fun extractPageMedia(url: String, traceId: String? = null): ExtractedMedia? {
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
+        val opId = if (effectiveTraceId != null) {
+            MediaExtractionTracer.startOperation(
+                traceId = effectiveTraceId,
+                component = "PageMetadataExtractor",
+                stage = "PAGE_METADATA_EXTRACTION",
+                name = "extractPageMedia",
+                details = mapOf("url" to url)
+            )
+        } else null
+
         val cleanUrl = url.trim()
-        if (cleanUrl.isBlank()) return null
+        if (cleanUrl.isBlank()) {
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    result = "null",
+                    decision = "BLANK_URL",
+                    reason = "URL is blank"
+                )
+            }
+            return null
+        }
 
         val lower = cleanUrl.lowercase()
 
         // 1. Social platform direct handlers
         if (lower.contains("instagram.com") || lower.contains("instagr.am")) {
-            val igMedia = extractInstagramMedia(cleanUrl)
-            if (igMedia != null) return igMedia
+            val igMedia = extractInstagramMedia(cleanUrl, effectiveTraceId)
+            if (igMedia != null) {
+                recordCompleted(effectiveTraceId, opId, igMedia, "INSTAGRAM_HANDLER")
+                return igMedia
+            }
         }
 
         if (lower.contains("facebook.com") || lower.contains("fb.watch")) {
-            val fbMedia = extractFacebookMedia(cleanUrl)
-            if (fbMedia != null) return fbMedia
+            val fbMedia = extractFacebookMedia(cleanUrl, effectiveTraceId)
+            if (fbMedia != null) {
+                recordCompleted(effectiveTraceId, opId, fbMedia, "FACEBOOK_HANDLER")
+                return fbMedia
+            }
         }
 
         if (lower.contains("pinterest.com") || lower.contains("pin.it")) {
-            val pinMedia = extractPinterestMedia(cleanUrl)
-            if (pinMedia != null) return pinMedia
+            val pinMedia = extractPinterestMedia(cleanUrl, effectiveTraceId)
+            if (pinMedia != null) {
+                recordCompleted(effectiveTraceId, opId, pinMedia, "PINTEREST_HANDLER")
+                return pinMedia
+            }
         }
 
         if (lower.contains("reddit.com") || lower.contains("redd.it")) {
-            val redditMedia = extractRedditMedia(cleanUrl)
-            if (redditMedia != null) return redditMedia
+            val redditMedia = extractRedditMedia(cleanUrl, effectiveTraceId)
+            if (redditMedia != null) {
+                recordCompleted(effectiveTraceId, opId, redditMedia, "REDDIT_HANDLER")
+                return redditMedia
+            }
         }
 
         if (lower.contains("tiktok.com")) {
-            val tiktokMedia = extractTikTokMedia(cleanUrl)
-            if (tiktokMedia != null) return tiktokMedia
+            val tiktokMedia = extractTikTokMedia(cleanUrl, effectiveTraceId)
+            if (tiktokMedia != null) {
+                recordCompleted(effectiveTraceId, opId, tiktokMedia, "TIKTOK_HANDLER")
+                return tiktokMedia
+            }
         }
 
         // 2. Generic webpage OpenGraph & JSON-LD extraction
-        return extractGenericPageMedia(cleanUrl)
+        val generic = extractGenericPageMedia(cleanUrl, effectiveTraceId)
+        if (generic != null) {
+            recordCompleted(effectiveTraceId, opId, generic, "GENERIC_OPENGRAPH_HANDLER")
+            return generic
+        }
+
+        if (effectiveTraceId != null && opId != null) {
+            MediaExtractionTracer.endOperation(
+                traceId = effectiveTraceId,
+                opId = opId,
+                result = "null",
+                decision = "NO_PAGE_MEDIA_FOUND",
+                reason = "No supported social or OpenGraph media tags found"
+            )
+        }
+        return null
     }
 
-    suspend fun extractFacebookMedia(url: String): ExtractedMedia? {
+    private fun recordCompleted(traceId: String?, opId: String?, media: ExtractedMedia, handler: String) {
+        if (traceId != null && opId != null) {
+            val mediaTypeName = when (media) {
+                is ExtractedMedia.Image -> "IMAGE"
+                is ExtractedMedia.Carousel -> "CAROUSEL (${media.items.size} items)"
+                is ExtractedMedia.Video -> "VIDEO"
+                is ExtractedMedia.Audio -> "AUDIO"
+                is ExtractedMedia.Playlist -> "PLAYLIST"
+            }
+            MediaExtractionTracer.endOperation(
+                traceId = traceId,
+                opId = opId,
+                result = "$handler extracted $mediaTypeName: ${media.title}",
+                decision = "PAGE_MEDIA_EXTRACTED",
+                reason = "Extracted media via $handler",
+                details = mapOf("mediaType" to mediaTypeName, "title" to media.title, "webpageUrl" to media.webpageUrl)
+            )
+        }
+    }
+
+    suspend fun extractFacebookMedia(url: String, traceId: String? = null): ExtractedMedia? {
         val lower = url.lowercase()
         // If explicitly a Reel or Video URL, let yt-dlp handle it
         if (lower.contains("/reel/") || lower.contains("/videos/") || lower.contains("/watch") || lower.contains("fb.watch")) {
+            if (traceId != null) {
+                MediaExtractionTracer.logEvent(
+                    traceId = traceId,
+                    component = "PageMetadataExtractor",
+                    stage = "FACEBOOK_EXTRACTION",
+                    event = "SKIPPED_FOR_YTDLP",
+                    level = TraceLevel.DEBUG,
+                    reason = "Facebook video/reel endpoint delegated to yt-dlp"
+                )
+            }
             return null
         }
 
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
 
             // Check if page contains video indicators
             val hasVideo = html.contains("og:video") || html.contains("\"video_id\"") || html.contains("playable_url")
             if (hasVideo) {
-                // If it has video, do not force Image; let yt-dlp extract video
+                if (traceId != null) {
+                    MediaExtractionTracer.logEvent(
+                        traceId = traceId,
+                        component = "PageMetadataExtractor",
+                        stage = "FACEBOOK_EXTRACTION",
+                        event = "VIDEO_INDICATOR_FOUND",
+                        level = TraceLevel.DEBUG,
+                        reason = "Facebook page contains video indicators, delegating to yt-dlp"
+                    )
+                }
                 return null
             }
 
@@ -91,24 +182,49 @@ object PageMetadataExtractor {
                 ?: extractMetaTag(html, "og:image")
                 ?: extractMetaTag(html, "twitter:image")
 
-            if (!ogImage.isNullOrBlank() && !ogImage.contains("fb_icon_325x325.png") && !ogImage.contains("static.xx.fbcdn.net/rsrc.php")) {
-                val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Facebook Photo"
-                val description = extractMetaTag(html, "og:description").orEmpty()
-                val width = extractMetaTag(html, "og:image:width")?.toIntOrNull()
-                val height = extractMetaTag(html, "og:image:height")?.toIntOrNull()
+            if (!ogImage.isNullOrBlank()) {
+                if (ogImage.contains("fb_icon_325x325.png") || ogImage.contains("static.xx.fbcdn.net/rsrc.php")) {
+                    if (traceId != null) {
+                        MediaExtractionTracer.logCandidate(
+                            traceId = traceId,
+                            source = "FACEBOOK_OG_IMAGE",
+                            rawValue = ogImage,
+                            rejected = true,
+                            rejectionReason = "Generic Facebook logo icon, not post media"
+                        )
+                    }
+                } else {
+                    val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Facebook Photo"
+                    val description = extractMetaTag(html, "og:description").orEmpty()
+                    val width = extractMetaTag(html, "og:image:width")?.toIntOrNull()
+                    val height = extractMetaTag(html, "og:image:height")?.toIntOrNull()
 
-                return ExtractedMedia.Image(
-                    id = "fb_" + UUID.randomUUID().toString().take(8),
-                    title = cleanText(title),
-                    webpageUrl = url,
-                    directDownloadUrl = decodeHtmlEntities(ogImage),
-                    thumbnail = decodeHtmlEntities(ogImage),
-                    mimeType = "image/jpeg",
-                    width = width,
-                    height = height,
-                    uploader = "Facebook",
-                    description = cleanText(description)
-                )
+                    val cleanDownloadUrl = decodeHtmlEntities(ogImage)
+                    if (traceId != null) {
+                        MediaExtractionTracer.logCandidate(
+                            traceId = traceId,
+                            source = "FACEBOOK_OG_IMAGE",
+                            attribute = "content",
+                            rawValue = cleanDownloadUrl,
+                            accepted = true,
+                            mediaType = MediaType.IMAGE,
+                            confidence = 0.95f
+                        )
+                    }
+
+                    return ExtractedMedia.Image(
+                        id = "fb_" + UUID.randomUUID().toString().take(8),
+                        title = cleanText(title),
+                        webpageUrl = url,
+                        directDownloadUrl = cleanDownloadUrl,
+                        thumbnail = cleanDownloadUrl,
+                        mimeType = "image/jpeg",
+                        width = width,
+                        height = height,
+                        uploader = "Facebook",
+                        description = cleanText(description)
+                    )
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -118,7 +234,7 @@ object PageMetadataExtractor {
         return null
     }
 
-    suspend fun extractInstagramMedia(url: String): ExtractedMedia? {
+    suspend fun extractInstagramMedia(url: String, traceId: String? = null): ExtractedMedia? {
         val lower = url.lowercase()
         // If explicitly a Reel, TV, or Stories URL, let yt-dlp handle it directly
         if (lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") || lower.contains("/stories/")) {
@@ -126,10 +242,10 @@ object PageMetadataExtractor {
         }
 
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
 
             // Look for carousel items in embedded JSON scripts
-            val carouselItems = extractInstagramCarouselItems(html)
+            val carouselItems = extractInstagramCarouselItems(html, traceId)
             if (carouselItems.isNotEmpty()) {
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Post"
                 return ExtractedMedia.Carousel(
@@ -158,12 +274,25 @@ object PageMetadataExtractor {
                 val width = extractMetaTag(html, "og:image:width")?.toIntOrNull()
                 val height = extractMetaTag(html, "og:image:height")?.toIntOrNull()
 
+                val cleanDownloadUrl = decodeHtmlEntities(ogImage)
+                if (traceId != null) {
+                    MediaExtractionTracer.logCandidate(
+                        traceId = traceId,
+                        source = "INSTAGRAM_OG_IMAGE",
+                        attribute = "content",
+                        rawValue = cleanDownloadUrl,
+                        accepted = true,
+                        mediaType = MediaType.IMAGE,
+                        confidence = 0.95f
+                    )
+                }
+
                 return ExtractedMedia.Image(
                     id = "ig_" + UUID.randomUUID().toString().take(8),
                     title = cleanText(title),
                     webpageUrl = url,
-                    directDownloadUrl = decodeHtmlEntities(ogImage),
-                    thumbnail = decodeHtmlEntities(ogImage),
+                    directDownloadUrl = cleanDownloadUrl,
+                    thumbnail = cleanDownloadUrl,
                     mimeType = "image/jpeg",
                     width = width,
                     height = height,
@@ -179,7 +308,7 @@ object PageMetadataExtractor {
         return null
     }
 
-    private fun extractInstagramCarouselItems(html: String): List<CarouselItem> {
+    private fun extractInstagramCarouselItems(html: String, traceId: String? = null): List<CarouselItem> {
         val items = mutableListOf<CarouselItem>()
         try {
             // Find JSON blocks containing edge_sidecar_to_children or carousel_media
@@ -203,6 +332,17 @@ object PageMetadataExtractor {
                             val h = dim?.optInt("height")
 
                             if (isVideo && videoUrl.isNotBlank()) {
+                                if (traceId != null) {
+                                    MediaExtractionTracer.logCandidate(
+                                        traceId = traceId,
+                                        source = "INSTAGRAM_CAROUSEL_JSON",
+                                        subSource = "edge_sidecar_to_children.video_url",
+                                        rawValue = videoUrl,
+                                        accepted = true,
+                                        mediaType = MediaType.VIDEO,
+                                        confidence = 0.95f
+                                    )
+                                }
                                 items.add(
                                     CarouselItem(
                                         id = id,
@@ -216,6 +356,17 @@ object PageMetadataExtractor {
                                     )
                                 )
                             } else if (displayUrl.isNotBlank()) {
+                                if (traceId != null) {
+                                    MediaExtractionTracer.logCandidate(
+                                        traceId = traceId,
+                                        source = "INSTAGRAM_CAROUSEL_JSON",
+                                        subSource = "edge_sidecar_to_children.display_url",
+                                        rawValue = displayUrl,
+                                        accepted = true,
+                                        mediaType = MediaType.IMAGE,
+                                        confidence = 0.95f
+                                    )
+                                }
                                 items.add(
                                     CarouselItem(
                                         id = id,
@@ -239,9 +390,9 @@ object PageMetadataExtractor {
         return items
     }
 
-    suspend fun extractPinterestMedia(url: String): ExtractedMedia? {
+    suspend fun extractPinterestMedia(url: String, traceId: String? = null): ExtractedMedia? {
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
             val ogImage = extractMetaTag(html, "og:image")
                 ?: extractMetaTag(html, "twitter:image")
                 ?: extractMetaTag(html, "og:image:secure_url")
@@ -256,11 +407,24 @@ object PageMetadataExtractor {
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Pinterest Image"
                 val description = extractMetaTag(html, "og:description").orEmpty()
 
+                val cleanDirectUrl = decodeHtmlEntities(fullImageUrl)
+                if (traceId != null) {
+                    MediaExtractionTracer.logCandidate(
+                        traceId = traceId,
+                        source = "PINTEREST_OG_IMAGE",
+                        attribute = "content",
+                        rawValue = cleanDirectUrl,
+                        accepted = true,
+                        mediaType = MediaType.IMAGE,
+                        confidence = 0.95f
+                    )
+                }
+
                 return ExtractedMedia.Image(
                     id = "pin_" + UUID.randomUUID().toString().take(8),
                     title = cleanText(title),
                     webpageUrl = url,
-                    directDownloadUrl = decodeHtmlEntities(fullImageUrl),
+                    directDownloadUrl = cleanDirectUrl,
                     thumbnail = decodeHtmlEntities(ogImage),
                     mimeType = "image/jpeg",
                     uploader = "Pinterest",
@@ -275,12 +439,12 @@ object PageMetadataExtractor {
         return null
     }
 
-    suspend fun extractRedditMedia(url: String): ExtractedMedia? {
+    suspend fun extractRedditMedia(url: String, traceId: String? = null): ExtractedMedia? {
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
             // Check for Reddit gallery
             if (html.contains("gallery_data") || html.contains("media_metadata") || html.contains("shreddit-gallery")) {
-                val galleryItems = extractRedditGalleryItems(html)
+                val galleryItems = extractRedditGalleryItems(html, traceId)
                 if (galleryItems.isNotEmpty()) {
                     val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Reddit Gallery"
                     return ExtractedMedia.Carousel(
@@ -300,6 +464,16 @@ object PageMetadataExtractor {
                     html.contains("post-type=\"video\"") ||
                     html.contains("shreddit-player")
             if (hasVideo) {
+                if (traceId != null) {
+                    MediaExtractionTracer.logEvent(
+                        traceId = traceId,
+                        component = "PageMetadataExtractor",
+                        stage = "REDDIT_EXTRACTION",
+                        event = "REDDIT_VIDEO_DETECTED",
+                        level = TraceLevel.DEBUG,
+                        reason = "Reddit page has v.redd.it or shreddit-player video component"
+                    )
+                }
                 return null // Let yt-dlp handle Reddit video
             }
 
@@ -322,9 +496,20 @@ object PageMetadataExtractor {
                         val param = cleanImg.substringAfter("url=").substringBefore("&")
                         val decoded = URLDecoder.decode(param, "UTF-8")
                         if (decoded.startsWith("http")) cleanImg = decoded
-                    } catch (e: Exception) {}
+                    } catch (_: Exception) {}
                 }
                 cleanImg = cleanImg.replace("&amp;", "&")
+
+                if (traceId != null) {
+                    MediaExtractionTracer.logCandidate(
+                        traceId = traceId,
+                        source = "REDDIT_IMAGE_TAG",
+                        rawValue = cleanImg,
+                        accepted = true,
+                        mediaType = MediaType.IMAGE,
+                        confidence = 0.95f
+                    )
+                }
 
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Reddit Image"
                 return ExtractedMedia.Image(
@@ -345,7 +530,7 @@ object PageMetadataExtractor {
         return null
     }
 
-    suspend fun extractTikTokMedia(url: String): ExtractedMedia? {
+    suspend fun extractTikTokMedia(url: String, traceId: String? = null): ExtractedMedia? {
         val lower = url.lowercase()
         // If explicitly a video endpoint, let yt-dlp handle it
         if (lower.contains("/video/") || lower.contains("/v/")) {
@@ -353,11 +538,11 @@ object PageMetadataExtractor {
         }
 
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
 
             // If it is a /photo/ URL or contains image slideshow data
             if (lower.contains("/photo/") || html.contains("image_post_info") || html.contains("\"images\":[")) {
-                val carouselItems = extractTikTokCarouselItems(html)
+                val carouselItems = extractTikTokCarouselItems(html, traceId)
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "TikTok Photo"
                 if (carouselItems.isNotEmpty()) {
                     return ExtractedMedia.Carousel(
@@ -375,6 +560,16 @@ object PageMetadataExtractor {
                     ?: extractMetaTag(html, "twitter:image")
                 if (!ogImage.isNullOrBlank()) {
                     val cleanImg = decodeHtmlEntities(ogImage).replace("&amp;", "&")
+                    if (traceId != null) {
+                        MediaExtractionTracer.logCandidate(
+                            traceId = traceId,
+                            source = "TIKTOK_PHOTO_OG_IMAGE",
+                            rawValue = cleanImg,
+                            accepted = true,
+                            mediaType = MediaType.IMAGE,
+                            confidence = 0.95f
+                        )
+                    }
                     return ExtractedMedia.Image(
                         id = "tiktok_" + UUID.randomUUID().toString().take(8),
                         title = cleanText(title),
@@ -394,7 +589,7 @@ object PageMetadataExtractor {
         return null
     }
 
-    private fun extractTikTokCarouselItems(html: String): List<CarouselItem> {
+    private fun extractTikTokCarouselItems(html: String, traceId: String? = null): List<CarouselItem> {
         val items = mutableListOf<CarouselItem>()
         try {
             val pattern = Pattern.compile("\"displayImage\"\\s*:\\s*\\{\\s*\"urlList\"\\s*:\\s*(\\[.*?\\])", Pattern.DOTALL)
@@ -406,6 +601,17 @@ object PageMetadataExtractor {
                 val firstUrl = jsonArr.optString(0, "")
                 if (firstUrl.isNotBlank()) {
                     val cleanUrl = firstUrl.replace("&amp;", "&")
+                    if (traceId != null) {
+                        MediaExtractionTracer.logCandidate(
+                            traceId = traceId,
+                            source = "TIKTOK_CAROUSEL_JSON",
+                            subSource = "displayImage.urlList",
+                            rawValue = cleanUrl,
+                            accepted = true,
+                            mediaType = MediaType.IMAGE,
+                            confidence = 0.95f
+                        )
+                    }
                     items.add(
                         CarouselItem(
                             id = "tiktok_img_$idx",
@@ -425,7 +631,7 @@ object PageMetadataExtractor {
         return items
     }
 
-    private fun extractRedditGalleryItems(html: String): List<CarouselItem> {
+    private fun extractRedditGalleryItems(html: String, traceId: String? = null): List<CarouselItem> {
         val items = mutableListOf<CarouselItem>()
         try {
             val jsonPattern = Pattern.compile("media_metadata\"\\s*:\\s*(\\{.*?\\})\\s*,", Pattern.DOTALL)
@@ -443,6 +649,17 @@ object PageMetadataExtractor {
                         val imgUrl = s?.optString("u")?.replace("&amp;", "&") ?: continue
                         val w = s.optInt("x")
                         val h = s.optInt("y")
+                        if (traceId != null) {
+                            MediaExtractionTracer.logCandidate(
+                                traceId = traceId,
+                                source = "REDDIT_GALLERY_JSON",
+                                subSource = "media_metadata.$key.s.u",
+                                rawValue = imgUrl,
+                                accepted = true,
+                                mediaType = MediaType.IMAGE,
+                                confidence = 0.95f
+                            )
+                        }
                         items.add(
                             CarouselItem(
                                 id = key,
@@ -465,9 +682,9 @@ object PageMetadataExtractor {
         return items
     }
 
-    suspend fun extractGenericPageMedia(url: String): ExtractedMedia? {
+    suspend fun extractGenericPageMedia(url: String, traceId: String? = null): ExtractedMedia? {
         try {
-            val html = fetchHtml(url) ?: return null
+            val html = fetchHtml(url, traceId) ?: return null
 
             val ogVideo = extractMetaTag(html, "og:video:secure_url")
                 ?: extractMetaTag(html, "og:video")
@@ -476,6 +693,16 @@ object PageMetadataExtractor {
 
             // If page has clear video, we don't treat it as Image
             if (!ogVideo.isNullOrBlank()) {
+                if (traceId != null) {
+                    MediaExtractionTracer.logEvent(
+                        traceId = traceId,
+                        component = "PageMetadataExtractor",
+                        stage = "GENERIC_OPENGRAPH",
+                        event = "OPENGRAPH_VIDEO_PRESENT",
+                        level = TraceLevel.DEBUG,
+                        reason = "Page contains og:video or twitter:player, leaving for video extraction"
+                    )
+                }
                 return null
             }
 
@@ -493,12 +720,25 @@ object PageMetadataExtractor {
                 val width = extractMetaTag(html, "og:image:width")?.toIntOrNull()
                 val height = extractMetaTag(html, "og:image:height")?.toIntOrNull()
 
+                val cleanDownloadUrl = decodeHtmlEntities(ogImage)
+                if (traceId != null) {
+                    MediaExtractionTracer.logCandidate(
+                        traceId = traceId,
+                        source = "GENERIC_OG_IMAGE",
+                        attribute = "content",
+                        rawValue = cleanDownloadUrl,
+                        accepted = true,
+                        mediaType = MediaType.IMAGE,
+                        confidence = 0.85f
+                    )
+                }
+
                 return ExtractedMedia.Image(
                     id = "web_" + UUID.randomUUID().toString().take(8),
                     title = cleanText(title),
                     webpageUrl = url,
-                    directDownloadUrl = decodeHtmlEntities(ogImage),
-                    thumbnail = decodeHtmlEntities(ogImage),
+                    directDownloadUrl = cleanDownloadUrl,
+                    thumbnail = cleanDownloadUrl,
                     mimeType = "image/jpeg",
                     width = width,
                     height = height,
@@ -514,7 +754,17 @@ object PageMetadataExtractor {
         return null
     }
 
-    private suspend fun fetchHtml(url: String): String? {
+    private suspend fun fetchHtml(url: String, traceId: String? = null): String? {
+        val opId = if (traceId != null) {
+            MediaExtractionTracer.startOperation(
+                traceId = traceId,
+                component = "PageMetadataExtractor",
+                stage = "FETCH_HTML",
+                name = "fetchHtml",
+                details = mapOf("url" to url)
+            )
+        } else null
+
         return try {
             val request = Request.Builder()
                 .url(url)
@@ -527,13 +777,46 @@ object PageMetadataExtractor {
             val response = CancellableNetworkClient.executeCancellable(httpClient, request)
             response.use { resp ->
                 if (resp.isSuccessful) {
-                    resp.body?.string()
-                } else null
+                    val bodyString = resp.body?.string()
+                    if (traceId != null && !bodyString.isNullOrBlank()) {
+                        MediaExtractionTracer.recordHtmlCapture(traceId, bodyString, url)
+                        if (opId != null) {
+                            MediaExtractionTracer.endOperation(
+                                traceId = traceId,
+                                opId = opId,
+                                result = "HTTP ${resp.code} (${bodyString.length} chars)",
+                                decision = "HTML_FETCH_SUCCESS",
+                                reason = "HTTP ${resp.code} response"
+                            )
+                        }
+                    }
+                    bodyString
+                } else {
+                    if (traceId != null && opId != null) {
+                        MediaExtractionTracer.endOperation(
+                            traceId = traceId,
+                            opId = opId,
+                            result = "HTTP ${resp.code}",
+                            decision = "HTML_FETCH_UNSUCCESSFUL",
+                            reason = "HTTP response status ${resp.code}"
+                        )
+                    }
+                    null
+                }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             AppLogger.d("PageMetadataExtractor", "Failed to fetch HTML for $url: ${e.message}")
+            if (traceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = traceId,
+                    opId = opId,
+                    error = e,
+                    decision = "HTML_FETCH_ERROR",
+                    reason = e.message
+                )
+            }
             null
         }
     }

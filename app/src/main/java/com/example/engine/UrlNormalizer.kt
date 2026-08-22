@@ -21,9 +21,31 @@ object UrlNormalizer {
      * Resolves short links, redirects, and platform share URLs to canonical URLs
      * that yt-dlp extractors natively understand. Supports coroutine cancellation.
      */
-    suspend fun resolveCanonicalUrl(inputUrl: String): String {
+    suspend fun resolveCanonicalUrl(inputUrl: String, traceId: String? = null): String {
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
+        val opId = if (effectiveTraceId != null) {
+            MediaExtractionTracer.startOperation(
+                traceId = effectiveTraceId,
+                component = "UrlNormalizer",
+                stage = "URL_NORMALIZATION",
+                name = "resolveCanonicalUrl",
+                details = mapOf("inputUrl" to inputUrl)
+            )
+        } else null
+
         val trimmed = inputUrl.trim()
-        if (trimmed.isBlank()) return trimmed
+        if (trimmed.isBlank()) {
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    result = trimmed,
+                    decision = "BLANK_URL",
+                    reason = "Input URL was blank"
+                )
+            }
+            return trimmed
+        }
 
         val normalized = if (!trimmed.startsWith("http://", ignoreCase = true) &&
             !trimmed.startsWith("https://", ignoreCase = true)
@@ -39,6 +61,15 @@ object UrlNormalizer {
             val id = instaReelMatcher.group(1)
             val rewritten = "https://www.instagram.com/reel/$id/"
             AppLogger.i("UrlNormalizer", "Rewrote Instagram share reel URL to canonical: $rewritten")
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    result = rewritten,
+                    decision = "REWRITE_INSTAGRAM_REEL",
+                    reason = "Matched INSTA_SHARE_REEL regex"
+                )
+            }
             return rewritten
         }
 
@@ -47,6 +78,15 @@ object UrlNormalizer {
             val id = instaPostMatcher.group(1)
             val rewritten = "https://www.instagram.com/p/$id/"
             AppLogger.i("UrlNormalizer", "Rewrote Instagram share post URL to canonical: $rewritten")
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    result = rewritten,
+                    decision = "REWRITE_INSTAGRAM_POST",
+                    reason = "Matched INSTA_SHARE_POST regex"
+                )
+            }
             return rewritten
         }
 
@@ -57,6 +97,15 @@ object UrlNormalizer {
                 val decoded = java.net.URLDecoder.decode(queryParam, "UTF-8")
                 if (decoded.startsWith("http://", ignoreCase = true) || decoded.startsWith("https://", ignoreCase = true)) {
                     AppLogger.i("UrlNormalizer", "Unwrapped Reddit media parameter URL: $decoded")
+                    if (effectiveTraceId != null && opId != null) {
+                        MediaExtractionTracer.endOperation(
+                            traceId = effectiveTraceId,
+                            opId = opId,
+                            result = decoded,
+                            decision = "UNWRAP_REDDIT_MEDIA_PARAM",
+                            reason = "Extracted target URL from url= parameter"
+                        )
+                    }
                     return decoded
                 }
             } catch (e: Exception) {
@@ -81,13 +130,55 @@ object UrlNormalizer {
                 lower.contains("t.co/")
 
         if (isRedirectLink) {
+            if (effectiveTraceId != null) {
+                MediaExtractionTracer.logEvent(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    component = "UrlNormalizer",
+                    stage = "REDIRECT_START",
+                    event = "FOLLOWING_REDIRECT",
+                    level = TraceLevel.DEBUG,
+                    input = normalized
+                )
+            }
             val resolved = followRedirects(normalized)
             if (resolved != null && resolved != normalized) {
                 AppLogger.i("UrlNormalizer", "Resolved redirect: $normalized -> $resolved")
-                return resolveCanonicalUrl(resolved)
+                if (effectiveTraceId != null) {
+                    MediaExtractionTracer.logEvent(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        component = "UrlNormalizer",
+                        stage = "REDIRECT_RESULT",
+                        event = "REDIRECT_RESOLVED",
+                        level = TraceLevel.INFO,
+                        input = normalized,
+                        output = resolved
+                    )
+                }
+                val recursiveResult = resolveCanonicalUrl(resolved, effectiveTraceId)
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        result = recursiveResult,
+                        decision = "REDIRECT_CHAIN_RESOLVED",
+                        reason = "Resolved redirect target and normalized recursively"
+                    )
+                }
+                return recursiveResult
             }
         }
 
+        if (effectiveTraceId != null && opId != null) {
+            MediaExtractionTracer.endOperation(
+                traceId = effectiveTraceId,
+                opId = opId,
+                result = normalized,
+                decision = "URL_UNCHANGED",
+                reason = "URL is already in canonical format"
+            )
+        }
         return normalized
     }
 

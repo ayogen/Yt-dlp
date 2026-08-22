@@ -26,18 +26,22 @@ class MediaExtractionEngine(private val context: Context) {
         cookiesFile: File? = null,
         userAgent: String? = null,
         proxyUrl: String? = null,
-        geoBypass: Boolean = true
+        geoBypass: Boolean = true,
+        traceId: String? = null
     ): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         val trimmedUrl = url.trim()
         if (trimmedUrl.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("URL cannot be empty"))
         }
 
-        val canonicalUrl = UrlNormalizer.resolveCanonicalUrl(trimmedUrl)
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
+            ?: MediaExtractionTracer.startSession(trimmedUrl).traceId
+
+        val canonicalUrl = UrlNormalizer.resolveCanonicalUrl(trimmedUrl, effectiveTraceId)
         AppLogger.i("MediaExtractionEngine", "Analysis started: $canonicalUrl")
 
         // Step 0: Semantic Media Classification
-        val classification = SemanticClassifier.classify(canonicalUrl)
+        val classification = SemanticClassifier.classify(canonicalUrl, effectiveTraceId)
         AppLogger.i(
             "MediaExtractionEngine",
             "[SemanticClassifier] platform=${classification.platform}, intent=${classification.intent}, ytDlpEligible=${classification.isYtDlpEligible}, reason=${classification.reason}"
@@ -48,7 +52,7 @@ class MediaExtractionEngine(private val context: Context) {
             AppLogger.i("MediaExtractionEngine", "Direct inspection started")
             val directInspection = try {
                 withTimeoutOrNull(5000L) {
-                    DirectMediaInspector.inspectUrl(canonicalUrl)
+                    DirectMediaInspector.inspectUrl(canonicalUrl, effectiveTraceId)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -69,7 +73,8 @@ class MediaExtractionEngine(private val context: Context) {
                 val resolvedType = MediaTypeResolver.resolveMediaType(
                     url = canonicalUrl,
                     mimeType = directInspection.mimeType,
-                    classification = classification
+                    classification = classification,
+                    traceId = effectiveTraceId
                 )
 
                 val metadata = when (resolvedType) {
@@ -129,7 +134,8 @@ class MediaExtractionEngine(private val context: Context) {
                     }
                 }
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                return@withContext Result.success(MediaTypeResolver.sanitizeMetadata(metadata))
+                val sanitized = MediaTypeResolver.sanitizeMetadata(metadata, effectiveTraceId)
+                return@withContext Result.success(sanitized)
             } else {
                 AppLogger.i("MediaExtractionEngine", "Direct inspection completed")
             }
@@ -138,7 +144,7 @@ class MediaExtractionEngine(private val context: Context) {
             AppLogger.i("MediaExtractionEngine", "Page metadata extraction started")
             val pageMedia = try {
                 withTimeoutOrNull(6000L) {
-                    PageMetadataExtractor.extractPageMedia(canonicalUrl)
+                    PageMetadataExtractor.extractPageMedia(canonicalUrl, effectiveTraceId)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -152,7 +158,7 @@ class MediaExtractionEngine(private val context: Context) {
                     is ExtractedMedia.Image, is ExtractedMedia.Carousel -> {
                         AppLogger.i("MediaExtractionEngine", "Page metadata completed: Extracted ${pageMedia.javaClass.simpleName}")
                         AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                        val meta = MediaTypeResolver.sanitizeMetadata(pageMedia.toMediaMetadata())
+                        val meta = MediaTypeResolver.sanitizeMetadata(pageMedia.toMediaMetadata(), effectiveTraceId)
                         return@withContext Result.success(meta)
                     }
                     else -> {
@@ -164,7 +170,7 @@ class MediaExtractionEngine(private val context: Context) {
             }
 
             // Stage 3: yt-dlp Engine CLI extraction (Evaluated against Eligibility Gate)
-            val gateDecision = YtDlpEligibilityGate.evaluate(canonicalUrl, classification, pageMedia)
+            val gateDecision = YtDlpEligibilityGate.evaluate(canonicalUrl, classification, pageMedia, effectiveTraceId)
             AppLogger.i(
                 "MediaExtractionEngine",
                 "[YtDlpEligibilityGate] eligible=${gateDecision.isEligible}, reason=${gateDecision.reason}"
@@ -191,7 +197,8 @@ class MediaExtractionEngine(private val context: Context) {
                             binaryPath = binaryPath,
                             url = canonicalUrl,
                             cookiesPath = cookiesFile?.absolutePath,
-                            customArgs = customArgsBuilder.toString().trim()
+                            customArgs = customArgsBuilder.toString().trim(),
+                            traceId = effectiveTraceId
                         )
                     }
                 } catch (e: CancellationException) {
@@ -207,7 +214,7 @@ class MediaExtractionEngine(private val context: Context) {
 
             if (ytDlpResult != null && ytDlpResult.isSuccess) {
                 val meta = ytDlpResult.getOrThrow()
-                val refinedMeta = MediaTypeResolver.sanitizeMetadata(meta)
+                val refinedMeta = MediaTypeResolver.sanitizeMetadata(meta, effectiveTraceId)
                 AppLogger.i("MediaExtractionEngine", "yt-dlp completed")
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
                 return@withContext Result.success(refinedMeta)
@@ -223,12 +230,13 @@ class MediaExtractionEngine(private val context: Context) {
             // Stage 4: Embedded extractor & Generic OpenGraph fallback
             if (pageMedia != null) {
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                return@withContext Result.success(pageMedia.toMediaMetadata())
+                val meta = MediaTypeResolver.sanitizeMetadata(pageMedia.toMediaMetadata(), effectiveTraceId)
+                return@withContext Result.success(meta)
             }
 
             val pageMediaFallback = try {
                 withTimeoutOrNull(5000L) {
-                    PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
+                    PageMetadataExtractor.extractGenericPageMedia(canonicalUrl, effectiveTraceId)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -238,12 +246,13 @@ class MediaExtractionEngine(private val context: Context) {
 
             if (pageMediaFallback != null) {
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                return@withContext Result.success(pageMediaFallback.toMediaMetadata())
+                val meta = MediaTypeResolver.sanitizeMetadata(pageMediaFallback.toMediaMetadata(), effectiveTraceId)
+                return@withContext Result.success(meta)
             }
 
             val embeddedResult = try {
                 withTimeoutOrNull(5000L) {
-                    EmbeddedExtractorEngine.analyzeUrl(canonicalUrl)
+                    EmbeddedExtractorEngine.analyzeUrl(canonicalUrl, effectiveTraceId)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -253,7 +262,8 @@ class MediaExtractionEngine(private val context: Context) {
 
             if (embeddedResult != null && embeddedResult.isSuccess) {
                 AppLogger.i("MediaExtractionEngine", "Analysis completed")
-                return@withContext embeddedResult
+                val meta = MediaTypeResolver.sanitizeMetadata(embeddedResult.getOrThrow(), effectiveTraceId)
+                return@withContext Result.success(meta)
             }
 
             // Return a clear, diagnosed error message

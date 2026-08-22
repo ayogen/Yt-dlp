@@ -26,8 +26,24 @@ object YtDlpProcessRunner {
         binaryPath: String,
         url: String,
         cookiesPath: String? = null,
-        customArgs: String = ""
+        customArgs: String = "",
+        traceId: String? = null
     ): Result<MediaMetadata> {
+        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
+        val opId = if (effectiveTraceId != null) {
+            MediaExtractionTracer.startOperation(
+                traceId = effectiveTraceId,
+                component = "YtDlpProcessRunner",
+                stage = "YTDLP_CLI_EXTRACTION",
+                name = "extractMetadataCli",
+                details = mapOf(
+                    "url" to url,
+                    "cookiesConfigured" to (!cookiesPath.isNullOrBlank()).toString(),
+                    "customArgs" to AppLogger.sanitize(customArgs)
+                )
+            )
+        } else null
+
         val processId = "meta_${System.currentTimeMillis()}_${(1000..9999).random()}"
         return try {
             val request = YoutubeDLRequest(url)
@@ -55,13 +71,38 @@ object YtDlpProcessRunner {
             }
 
             AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url [processId=$processId]")
+            if (effectiveTraceId != null) {
+                MediaExtractionTracer.logEvent(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    component = "YtDlpProcessRunner",
+                    stage = "YTDLP_CLI_EXTRACTION",
+                    event = "PROCESS_START",
+                    level = TraceLevel.DEBUG,
+                    input = "processId=$processId",
+                    details = mapOf("processId" to processId)
+                )
+            }
 
             val response = executeRequestCancellable(request, processId)
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
                 AppLogger.e("YtDlpProcessRunner", "Metadata extraction failed: empty output")
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        error = Exception("yt-dlp returned empty metadata output"),
+                        decision = "EMPTY_OUTPUT",
+                        reason = "Empty stdout from yt-dlp"
+                    )
+                }
                 return Result.failure(Exception("yt-dlp returned empty metadata output"))
+            }
+
+            if (effectiveTraceId != null) {
+                MediaExtractionTracer.recordYtDlpDump(effectiveTraceId, stdout)
             }
 
             val json = JSONObject(stdout)
@@ -70,7 +111,33 @@ object YtDlpProcessRunner {
 
             if (isPlaylistDetected && metadata.playlistEntries.isEmpty()) {
                 AppLogger.e("YtDlpProcessRunner", "Playlist contains no accessible videos or is private")
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        error = Exception("Playlist contains no accessible videos or is private"),
+                        decision = "EMPTY_PLAYLIST",
+                        reason = "Playlist contains no accessible videos or is private"
+                    )
+                }
                 return Result.failure(Exception("Playlist contains no accessible videos or is private"))
+            }
+
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    result = "${metadata.title} (formats=${metadata.formats.size}, entries=${metadata.playlistEntries.size})",
+                    decision = "METADATA_PARSED",
+                    reason = "Successfully extracted JSON from yt-dlp",
+                    details = mapOf(
+                        "title" to metadata.title,
+                        "extractor" to metadata.extractorName,
+                        "formatsCount" to metadata.formats.size.toString(),
+                        "isPlaylist" to metadata.isPlaylist.toString(),
+                        "entriesCount" to metadata.playlistEntries.size.toString()
+                    )
+                )
             }
 
             Result.success(metadata)
@@ -79,10 +146,28 @@ object YtDlpProcessRunner {
                 try {
                     YoutubeDL.getInstance().destroyProcessById(processId)
                 } catch (_: Exception) {}
+                if (effectiveTraceId != null && opId != null) {
+                    MediaExtractionTracer.endOperation(
+                        traceId = effectiveTraceId,
+                        opId = opId,
+                        error = e,
+                        decision = "CANCELLED",
+                        reason = "Extraction cancelled by coroutine"
+                    )
+                }
                 throw e
             }
             val msg = e.message ?: e.javaClass.simpleName
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
+            if (effectiveTraceId != null && opId != null) {
+                MediaExtractionTracer.endOperation(
+                    traceId = effectiveTraceId,
+                    opId = opId,
+                    error = e,
+                    decision = "EXECUTION_ERROR",
+                    reason = msg
+                )
+            }
             Result.failure(e)
         }
     }
