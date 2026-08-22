@@ -419,9 +419,40 @@ object MediaExtractionTracer {
         if (!stderr.isNullOrBlank()) session.ytdlpError = stderr.take(4000)
     }
 
+    fun recordYtDlpDump(traceId: String, dumpJson: String) {
+        val session = sessions[traceId] ?: return
+        session.ytdlpOutput = dumpJson.take(4000)
+        logEvent(
+            traceId = traceId,
+            component = "YtDlpProcessRunner",
+            stage = "YTDLP_JSON_DUMP",
+            event = "DUMP_RECORDED",
+            level = TraceLevel.DEBUG,
+            details = mapOf("dumpLength" to dumpJson.length.toString())
+        )
+    }
+
     fun recordFFmpegOutput(traceId: String, output: String?) {
         val session = sessions[traceId] ?: return
         if (!output.isNullOrBlank()) session.ffmpegOutput = output.take(4000)
+    }
+
+    fun completeSession(traceId: String, metadata: com.example.data.model.MediaMetadata?) {
+        completeSession(
+            traceId = traceId,
+            isSuccess = metadata != null,
+            summary = metadata?.title ?: "Extracted Media",
+            error = null
+        )
+    }
+
+    fun failSession(traceId: String, reason: String) {
+        completeSession(
+            traceId = traceId,
+            isSuccess = false,
+            summary = null,
+            error = Exception(reason)
+        )
     }
 
     fun completeSession(

@@ -65,7 +65,7 @@ object AppLogger {
     fun w(tag: String, msg: String, taskId: String? = null) = log(LogLevel.WARNING, tag, msg, taskId)
     fun e(tag: String, msg: String, taskId: String? = null) = log(LogLevel.ERROR, tag, msg, taskId)
 
-    private fun sanitize(input: String): String {
+    fun sanitize(input: String): String {
         return input
             .replace(Regex("(?i)(password|token|auth|cookie|key)=[^&\\s]+"), "$1=***REDACTED***")
             .replace(Regex("(?i)Bearer\\s+[a-zA-Z0-9._\\-]+"), "Bearer ***REDACTED***")

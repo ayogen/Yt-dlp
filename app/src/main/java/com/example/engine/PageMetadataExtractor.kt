@@ -123,20 +123,22 @@ object PageMetadataExtractor {
 
     private fun recordCompleted(traceId: String?, opId: String?, media: ExtractedMedia, handler: String) {
         if (traceId != null && opId != null) {
+            val mediaMeta = media.toMediaMetadata()
             val mediaTypeName = when (media) {
                 is ExtractedMedia.Image -> "IMAGE"
                 is ExtractedMedia.Carousel -> "CAROUSEL (${media.items.size} items)"
                 is ExtractedMedia.Video -> "VIDEO"
                 is ExtractedMedia.Audio -> "AUDIO"
                 is ExtractedMedia.Playlist -> "PLAYLIST"
+                is ExtractedMedia.Unknown -> "UNKNOWN"
             }
             MediaExtractionTracer.endOperation(
                 traceId = traceId,
                 opId = opId,
-                result = "$handler extracted $mediaTypeName: ${media.title}",
+                result = "$handler extracted $mediaTypeName: ${mediaMeta.title}",
                 decision = "PAGE_MEDIA_EXTRACTED",
                 reason = "Extracted media via $handler",
-                details = mapOf("mediaType" to mediaTypeName, "title" to media.title, "webpageUrl" to media.webpageUrl)
+                details = mapOf("mediaType" to mediaTypeName, "title" to mediaMeta.title, "webpageUrl" to mediaMeta.webpageUrl)
             )
         }
     }
