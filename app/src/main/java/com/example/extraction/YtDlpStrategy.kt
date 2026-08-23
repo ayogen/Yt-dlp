@@ -75,7 +75,7 @@ class YtDlpStrategy(private val context: Context? = null) : ExtractionStrategy {
                     directDownloadUrl = null,
                     filesize = infoDto.filesize,
                     filesizeApprox = infoDto.filesizeApprox,
-                    overallSize = com.example.core.model.MetadataNormalizer.resolveMediaSize(infoDto.filesize, infoDto.filesizeApprox)
+                    overallSize = MetadataNormalizer.resolveMediaSize(infoDto.filesize, infoDto.filesizeApprox)
                 )
                 ExtractionEvidence(candidates = candidates, metadata = canonicalMeta)
 

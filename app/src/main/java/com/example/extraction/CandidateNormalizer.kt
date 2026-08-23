@@ -33,8 +33,8 @@ object CandidateNormalizer {
             else -> MediaType.VIDEO
         }
 
-        // Only create a primary candidate if formats are present, it's a playlist with entries, or direct download URL exists
-        val hasPlayableContent = formats.isNotEmpty() || (dto.isPlaylist && dto.entries.isNotEmpty()) || !dto.directDownloadUrl.isNullOrBlank()
+        // Only create a primary candidate if formats are present or it's a playlist with entries
+        val hasPlayableContent = formats.isNotEmpty() || (dto.isPlaylist && dto.entries.isNotEmpty())
         if (hasPlayableContent) {
             candidates.add(
                 MediaCandidate(
