@@ -31,6 +31,7 @@ class ExtractionCoordinator(
         val allCandidates = mutableListOf<MediaCandidate>()
         val allWarnings = mutableListOf<String>()
         val failedStrategies = mutableListOf<String>()
+        var accumulatedMeta: com.example.core.model.CanonicalMetadata? = null
 
         // Execute strategies according to strategyOrder
         for (strategyKey in decision.strategyOrder) {
@@ -41,6 +42,9 @@ class ExtractionCoordinator(
                 allCandidates.addAll(evidence.candidates)
                 allWarnings.addAll(evidence.warnings)
                 failedStrategies.addAll(evidence.failedStrategies)
+                if (evidence.metadata != null && accumulatedMeta == null) {
+                    accumulatedMeta = evidence.metadata
+                }
 
                 // If we found a verified primary video/audio or direct stream, we have strong primary evidence
                 val hasPrimary = evidence.candidates.any { it.role.isPrimary }
@@ -70,8 +74,10 @@ class ExtractionCoordinator(
             sourceUrl = url,
             canonicalUrl = canonicalUrl,
             platform = decision.platform,
-            intent = decision.intent
+            intent = decision.intent,
+            fallbackMetadata = accumulatedMeta ?: com.example.core.model.CanonicalMetadata()
         )
+
 
         if (!resolution.isResolved) {
             AppLogger.w("ExtractionCoordinator", "Primary resource unresolved: ${resolution.reason}")

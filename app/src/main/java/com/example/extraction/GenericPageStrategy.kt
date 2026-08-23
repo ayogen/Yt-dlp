@@ -27,6 +27,22 @@ class GenericPageStrategy : ExtractionStrategy {
                 val isImageIntent = decision.intent == "image" || decision.intent == "photo"
 
                 val candidates = mutableListOf<MediaCandidate>()
+
+                if (metadata.directDownloadUrl?.isNotBlank() == true || metadata.formats.isNotEmpty()) {
+                    val streamUrl = metadata.directDownloadUrl ?: metadata.formats.firstOrNull()?.url ?: ""
+                    if (streamUrl.isNotBlank()) {
+                        val streamCandidate = CandidateNormalizer.fromEmbeddedMedia(
+                            mediaUrl = streamUrl,
+                            pageUrl = url,
+                            title = metadata.title,
+                            uploader = metadata.uploader,
+                            mediaType = metadata.mediaType,
+                            formats = metadata.formats
+                        )
+                        candidates.add(streamCandidate)
+                    }
+                }
+
                 if (metadata.thumbnail.isNotBlank()) {
                     val ogCandidate = CandidateNormalizer.fromOpenGraphImage(
                         imageUrl = metadata.thumbnail,
@@ -39,6 +55,7 @@ class GenericPageStrategy : ExtractionStrategy {
                 }
 
                 ExtractionEvidence(candidates = candidates)
+
             } else {
                 val err = result.exceptionOrNull()?.message ?: "Generic page extraction failed"
                 ExtractionEvidence(

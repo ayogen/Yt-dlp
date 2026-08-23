@@ -6,6 +6,7 @@ import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.download.StorageUtils
+import com.example.extraction.ExtractionCoordinator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -19,7 +20,7 @@ data class EngineDiagnosticError(
 
 class YtDlpEngine(private val context: Context) {
 
-    private val extractionEngine = MediaExtractionEngine(context)
+    private val extractionCoordinator = ExtractionCoordinator(context)
 
     suspend fun analyzeUrl(url: String, settings: AppSettings, traceId: String? = null): Result<MediaMetadata> = withContext(Dispatchers.IO) {
         val effectiveTraceId = traceId ?: MediaExtractionTracer.startSession(url).traceId
@@ -37,41 +38,37 @@ class YtDlpEngine(private val context: Context) {
         // Ensure yt-dlp runtime is initialized in background
         YtDlpBinaryManager.ensureInitialized(context)
 
-        val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
-
-        val result = extractionEngine.extractMedia(
+        val canonicalResult = extractionCoordinator.extract(
             url = resolvedUrl,
-            cookiesFile = cookiesFile,
-            userAgent = null,
-            proxyUrl = null,
-            geoBypass = true,
-            traceId = effectiveTraceId
+            settings = settings
         )
 
-        if (result.isSuccess) {
-            val meta = result.getOrNull()
+        if (canonicalResult.isSuccess) {
+            val canonical = canonicalResult.getOrThrow()
+            val meta = canonical.toMediaMetadata()
             MediaExtractionTracer.endOperation(
                 traceId = effectiveTraceId,
                 opId = opId,
-                result = meta?.title,
+                result = meta.title,
                 decision = "SUCCESS",
-                reason = "Successfully extracted media metadata"
+                reason = "Successfully extracted canonical media metadata"
             )
             MediaExtractionTracer.completeSession(effectiveTraceId, meta)
+            Result.success(meta)
         } else {
-            val err = result.exceptionOrNull()
+            val err = canonicalResult.exceptionOrNull() ?: Exception("Unknown extraction error")
             MediaExtractionTracer.endOperation(
                 traceId = effectiveTraceId,
                 opId = opId,
                 error = err,
                 decision = "FAILURE",
-                reason = err?.message
+                reason = err.message
             )
-            MediaExtractionTracer.failSession(effectiveTraceId, err?.message ?: "Unknown extraction error")
+            MediaExtractionTracer.failSession(effectiveTraceId, err.message ?: "Unknown extraction error")
+            Result.failure(err)
         }
-
-        result
     }
+
 
     suspend fun executeDownload(
         task: DownloadTaskEntity,

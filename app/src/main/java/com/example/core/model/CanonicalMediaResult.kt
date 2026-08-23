@@ -48,6 +48,14 @@ data class CanonicalMediaResult(
             metadata.directDownloadUrl
         }
 
+        val resolvedMediaType = when {
+            metadata.isPlaylist -> com.example.data.model.MediaType.PLAYLIST
+            primary?.mediaType != null -> primary.mediaType
+            intent.equals("audio", ignoreCase = true) -> com.example.data.model.MediaType.AUDIO
+            intent.equals("image", ignoreCase = true) -> com.example.data.model.MediaType.IMAGE
+            else -> com.example.data.model.MediaType.VIDEO
+        }
+
         return MediaMetadata(
             id = primary?.id ?: Math.abs(canonicalUrl.hashCode()).toString(),
             title = metadata.title.ifBlank { primary?.title ?: "Media" },
@@ -66,8 +74,10 @@ data class CanonicalMediaResult(
             formats = formats.map { it.toFormatInfo() },
             subtitles = metadata.subtitles,
             extractorName = metadata.extractorName,
-            directDownloadUrl = effectiveDirectUrl
+            directDownloadUrl = effectiveDirectUrl,
+            mediaType = resolvedMediaType
         )
+
     }
 
     companion object {

@@ -143,4 +143,44 @@ object CandidateNormalizer {
             provenance = mapOf("og:image" to imageUrl)
         )
     }
+
+    fun fromEmbeddedMedia(
+        mediaUrl: String,
+        pageUrl: String,
+        title: String = "",
+        uploader: String = "",
+        mediaType: MediaType = MediaType.VIDEO,
+        formats: List<com.example.data.model.FormatInfo> = emptyList()
+    ): MediaCandidate {
+        val normalizedFormats = if (formats.isNotEmpty()) {
+            formats.map { MetadataNormalizer.normalizeFormat(it) }
+        } else {
+            listOf(
+                MediaFormat(
+                    formatId = "embedded-best",
+                    ext = mediaUrl.substringBefore("?").substringAfterLast(".", if (mediaType == MediaType.AUDIO) "mp3" else "mp4"),
+                    resolution = "Direct Stream",
+                    url = mediaUrl,
+                    isAudioOnly = mediaType == MediaType.AUDIO,
+                    isVideoOnly = mediaType == MediaType.VIDEO
+                )
+            )
+        }
+
+        return MediaCandidate(
+            id = Math.abs(mediaUrl.hashCode()).toString(),
+            source = CandidateSource.EMBEDDED,
+            role = if (mediaType == MediaType.AUDIO) MediaRole.PRIMARY_AUDIO else MediaRole.PRIMARY_VIDEO,
+            mediaType = mediaType,
+            url = mediaUrl,
+            pageUrl = pageUrl,
+            title = title.ifBlank { "Embedded Media" },
+            uploader = uploader,
+            formats = normalizedFormats,
+            confidence = Confidence(ConfidenceTier.HIGH, 85, "Embedded playable media stream"),
+            isDownloadable = true,
+            provenance = mapOf("source" to "embedded_stream")
+        )
+    }
 }
+

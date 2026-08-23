@@ -91,7 +91,25 @@ class YtDlpStrategy(private val context: Context? = null) : ExtractionStrategy {
                 )
 
                 val candidates = CandidateNormalizer.fromYtDlpInfo(infoDto, url, decision.intent)
-                ExtractionEvidence(candidates = candidates)
+                val canonicalMeta = com.example.core.model.CanonicalMetadata(
+                    title = metadata.title,
+                    uploader = metadata.uploader,
+                    channel = metadata.channel,
+                    durationSeconds = metadata.durationSeconds,
+                    viewCount = metadata.viewCount,
+                    likeCount = metadata.likeCount,
+                    uploadDate = metadata.uploadDate,
+                    description = metadata.description,
+                    thumbnail = metadata.thumbnail,
+                    isPlaylist = metadata.isPlaylist,
+                    playlistCount = metadata.playlistCount,
+                    playlistEntries = metadata.playlistEntries,
+                    subtitles = metadata.subtitles,
+                    extractorName = metadata.extractorName,
+                    directDownloadUrl = metadata.directDownloadUrl
+                )
+                ExtractionEvidence(candidates = candidates, metadata = canonicalMeta)
+
             } else {
                 val err = cliResult.exceptionOrNull()?.message ?: "yt-dlp extraction failed"
                 ExtractionEvidence(

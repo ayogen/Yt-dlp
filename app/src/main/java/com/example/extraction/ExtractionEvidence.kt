@@ -1,9 +1,11 @@
 package com.example.extraction
 
+import com.example.core.model.CanonicalMetadata
 import com.example.core.model.MediaCandidate
 
 data class ExtractionEvidence(
     val candidates: List<MediaCandidate> = emptyList(),
+    val metadata: CanonicalMetadata? = null,
     val warnings: List<String> = emptyList(),
     val failedStrategies: List<String> = emptyList(),
     val logs: List<String> = emptyList()
@@ -24,3 +26,4 @@ data class ExtractionEvidence(
         return copy(failedStrategies = failedStrategies + strategyName)
     }
 }
+
