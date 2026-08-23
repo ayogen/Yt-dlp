@@ -118,6 +118,38 @@ object YtDlpProcessRunner {
             }
 
             val json = JSONObject(stdout)
+
+            // TEMPORARY DIAGNOSTIC INSTRUMENTATION: Raw yt-dlp filesize exposure
+            val rootFilesize = if (json.has("filesize") && !json.isNull("filesize")) json.opt("filesize").toString() else "NULL/ABSENT"
+            val rootFilesizeApprox = if (json.has("filesize_approx") && !json.isNull("filesize_approx")) json.opt("filesize_approx").toString() else "NULL/ABSENT"
+            val rootDuration = if (json.has("duration") && !json.isNull("duration")) json.opt("duration").toString() else "NULL/ABSENT"
+            AppLogger.i("YtDlpProcessRunner", "RAW_YTDLP_ROOT_SIZE | url=$url | filesize=$rootFilesize | filesize_approx=$rootFilesizeApprox | duration=$rootDuration")
+
+            val formatsArray = json.optJSONArray("formats")
+            if (formatsArray != null) {
+                for (i in 0 until formatsArray.length()) {
+                    val fmt = formatsArray.optJSONObject(i) ?: continue
+                    val fId = if (fmt.has("format_id") && !fmt.isNull("format_id")) fmt.opt("format_id").toString() else "NULL/ABSENT"
+                    val fFormat = if (fmt.has("format") && !fmt.isNull("format")) fmt.opt("format").toString() else "NULL/ABSENT"
+                    val fExt = if (fmt.has("ext") && !fmt.isNull("ext")) fmt.opt("ext").toString() else "NULL/ABSENT"
+                    val fWidth = if (fmt.has("width") && !fmt.isNull("width")) fmt.opt("width").toString() else "NULL/ABSENT"
+                    val fHeight = if (fmt.has("height") && !fmt.isNull("height")) fmt.opt("height").toString() else "NULL/ABSENT"
+                    val fFps = if (fmt.has("fps") && !fmt.isNull("fps")) fmt.opt("fps").toString() else "NULL/ABSENT"
+                    val fFilesize = if (fmt.has("filesize") && !fmt.isNull("filesize")) fmt.opt("filesize").toString() else "NULL/ABSENT"
+                    val fFilesizeApprox = if (fmt.has("filesize_approx") && !fmt.isNull("filesize_approx")) fmt.opt("filesize_approx").toString() else "NULL/ABSENT"
+                    val fTbr = if (fmt.has("tbr") && !fmt.isNull("tbr")) fmt.opt("tbr").toString() else "NULL/ABSENT"
+                    val fDuration = if (fmt.has("duration") && !fmt.isNull("duration")) fmt.opt("duration").toString() else "NULL/ABSENT"
+                    val fProtocol = if (fmt.has("protocol") && !fmt.isNull("protocol")) fmt.opt("protocol").toString() else "NULL/ABSENT"
+
+                    AppLogger.i(
+                        "YtDlpProcessRunner",
+                        "RAW_YTDLP_FORMAT_SIZE | format_id=$fId | format=$fFormat | ext=$fExt | width=$fWidth | height=$fHeight | fps=$fFps | filesize=$fFilesize | filesize_approx=$fFilesizeApprox | tbr=$fTbr | duration=$fDuration | protocol=$fProtocol"
+                    )
+                }
+            } else {
+                AppLogger.i("YtDlpProcessRunner", "RAW_YTDLP_FORMAT_SIZE | formats=NULL/ABSENT")
+            }
+
             val isPlaylistDetected = json.optString("_type") == "playlist" || (json.has("entries") && !json.isNull("entries"))
             val dto = com.example.extraction.YtDlpJsonParser.parse(json, url)
 
