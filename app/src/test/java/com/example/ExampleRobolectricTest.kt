@@ -85,6 +85,8 @@ class ExampleRobolectricTest {
         assertEquals("RickAstleyVEVO", parsed.uploader)
         assertEquals(212L, parsed.durationSeconds)
         assertEquals(2, parsed.formats.size)
+        assertEquals(50000000L, parsed.formats[0].filesize)
+        assertEquals("1080p", parsed.formats[0].displayResolution)
         assertEquals(1, parsed.subtitles.size)
         assertEquals("EN", parsed.subtitles[0].name)
     }
