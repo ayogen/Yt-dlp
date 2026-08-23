@@ -134,25 +134,37 @@ object EmbeddedExtractorEngine {
     }
 
     fun isDirectMediaUrl(url: String): Boolean {
-        val clean = url.substringBefore("?").lowercase()
-        return clean.endsWith(".mp4") || clean.endsWith(".mkv") || clean.endsWith(".webm") ||
-                clean.endsWith(".mp3") || clean.endsWith(".m4a") || clean.endsWith(".opus") ||
-                clean.endsWith(".wav") || clean.endsWith(".flac") || clean.endsWith(".m3u8") ||
-                clean.endsWith(".ts")
+        val clean = url.substringBefore("#").substringBefore("?").lowercase()
+        val ext = clean.substringAfterLast(".", "")
+        if (ext.isBlank()) return false
+        return isDirectImageExtension(ext) || isDirectAudioExtension(ext) || isDirectVideoExtension(ext)
     }
 
+    fun isDirectImageExtension(ext: String): Boolean =
+        ext.lowercase() in listOf("jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "svg", "heic", "heif")
+
+    fun isDirectAudioExtension(ext: String): Boolean =
+        ext.lowercase() in listOf("mp3", "m4a", "opus", "wav", "flac", "aac", "ogg", "wma", "mka")
+
+    fun isDirectVideoExtension(ext: String): Boolean =
+        ext.lowercase() in listOf("mp4", "mkv", "webm", "mov", "avi", "flv", "m3u8", "ts", "mpd", "3gp", "m4v")
+
     private suspend fun extractDirectMediaMetadata(url: String): Result<MediaMetadata> {
-        val fileName = url.substringBefore("?").substringAfterLast("/").ifBlank { "Direct Media Stream" }
-        val ext = fileName.substringAfterLast(".", "mp4")
-        val isAudio = ext in listOf("mp3", "m4a", "opus", "wav", "flac")
+        val clean = url.substringBefore("#").substringBefore("?")
+        val fileName = clean.substringAfterLast("/").ifBlank { "Direct Media" }
+        val ext = clean.substringAfterLast(".", "").lowercase()
+        val isImage = isDirectImageExtension(ext)
+        val isAudio = isDirectAudioExtension(ext)
 
         var contentLength: Long? = null
+        var mimeType: String? = null
         try {
             val headRequest = Request.Builder().url(url).head().build()
             val response = CancellableNetworkClient.executeCancellable(client, headRequest)
             response.use { resp ->
                 if (resp.isSuccessful) {
                     contentLength = resp.header("Content-Length")?.toLongOrNull()
+                    mimeType = resp.header("Content-Type")
                 }
             }
         } catch (e: CancellationException) {
@@ -161,37 +173,60 @@ object EmbeddedExtractorEngine {
             AppLogger.w("EmbeddedExtractor", "Could not fetch Content-Length: ${e.message}")
         }
 
-        val formats = if (isAudio) {
-            listOf(
-                FormatInfo(
-                    formatId = "audio-direct",
-                    ext = ext,
-                    acodec = ext,
-                    abr = null,
-                    filesize = contentLength,
-                    formatNote = "Direct Audio Stream",
-                    url = url
-                )
-            )
-        } else {
-            listOf(
-                FormatInfo(
-                    formatId = "best",
-                    ext = ext,
-                    resolution = "Direct Stream",
-                    vcodec = "h264",
-                    acodec = "aac",
-                    filesize = contentLength,
-                    formatNote = "Original Direct Stream",
-                    url = url
-                )
-            )
+        val resolvedMediaType = when {
+            isImage || mimeType?.startsWith("image/") == true -> com.example.data.model.MediaType.IMAGE
+            isAudio || mimeType?.startsWith("audio/") == true -> com.example.data.model.MediaType.AUDIO
+            else -> com.example.data.model.MediaType.VIDEO
         }
+
+        val formats = when (resolvedMediaType) {
+            com.example.data.model.MediaType.IMAGE -> {
+                listOf(
+                    FormatInfo(
+                        formatId = "image-direct",
+                        ext = ext.ifBlank { "jpg" },
+                        resolution = "Image",
+                        filesize = contentLength,
+                        formatNote = "Direct Image",
+                        url = url
+                    )
+                )
+            }
+            com.example.data.model.MediaType.AUDIO -> {
+                listOf(
+                    FormatInfo(
+                        formatId = "audio-direct",
+                        ext = ext.ifBlank { "mp3" },
+                        acodec = ext.ifBlank { "mp3" },
+                        abr = null,
+                        filesize = contentLength,
+                        formatNote = "Direct Audio Stream",
+                        url = url
+                    )
+                )
+            }
+            else -> {
+                listOf(
+                    FormatInfo(
+                        formatId = "best",
+                        ext = ext.ifBlank { "mp4" },
+                        resolution = "Direct Stream",
+                        vcodec = "h264",
+                        acodec = "aac",
+                        filesize = contentLength,
+                        formatNote = "Original Direct Stream",
+                        url = url
+                    )
+                )
+            }
+        }
+
+        val title = if (fileName.contains(".")) fileName.substringBeforeLast(".") else fileName
 
         return Result.success(
             MediaMetadata(
                 id = Math.abs(url.hashCode()).toString(),
-                title = fileName.substringBeforeLast("."),
+                title = title,
                 webpageUrl = url,
                 uploader = "Direct Web Source",
                 durationSeconds = 0L,
@@ -199,10 +234,13 @@ object EmbeddedExtractorEngine {
                 likeCount = null,
                 uploadDate = "",
                 description = "Direct media stream from $url",
-                thumbnail = "",
+                thumbnail = if (resolvedMediaType == com.example.data.model.MediaType.IMAGE) url else "",
                 formats = formats,
-                extractorName = "DirectStreamExtractor",
-                directDownloadUrl = url
+                extractorName = if (resolvedMediaType == com.example.data.model.MediaType.IMAGE) "DirectImageExtractor" else "DirectStreamExtractor",
+                directDownloadUrl = url,
+                mediaType = resolvedMediaType,
+                mimeType = mimeType,
+                fileSize = contentLength
             )
         )
     }

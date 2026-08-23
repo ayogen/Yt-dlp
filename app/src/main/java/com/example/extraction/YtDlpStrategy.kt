@@ -30,7 +30,7 @@ class YtDlpStrategy(private val context: Context? = null) : ExtractionStrategy {
                 YtDlpBinaryManager.ensureInitialized(context)
             }
 
-            val cliResult = YtDlpProcessRunner.extractMetadataCli(
+            val cliResult = YtDlpProcessRunner.extractInfoDto(
                 binaryPath = "",
                 url = url,
                 cookiesPath = settings?.cookiesFilePath?.ifBlank { null },
@@ -38,75 +38,44 @@ class YtDlpStrategy(private val context: Context? = null) : ExtractionStrategy {
             )
 
             if (cliResult.isSuccess) {
-                val metadata = cliResult.getOrThrow()
-                // Convert MediaMetadata to DTO / candidates
-                val formatsDto = metadata.formats.map { f ->
-                    com.example.extraction.model.YtDlpFormatDto(
-                        formatId = f.formatId,
-                        ext = f.ext,
-                        resolution = f.resolution,
-                        width = f.width,
-                        height = f.height,
-                        fps = f.fps,
-                        vcodec = f.vcodec,
-                        acodec = f.acodec,
-                        tbr = f.tbr,
-                        vbr = f.vbr,
-                        abr = f.abr,
-                        filesize = f.filesize,
-                        filesizeApprox = f.filesizeApprox,
-                        formatNote = f.formatNote,
-                        url = f.url,
-                        protocol = f.protocol
-                    )
-                }
-
-                val entriesDto = metadata.playlistEntries.map { e ->
-                    com.example.extraction.model.YtDlpPlaylistEntryDto(
-                        id = e.id,
-                        title = e.title,
-                        url = e.url,
-                        duration = e.durationSeconds,
-                        thumbnail = e.thumbnail,
-                        uploader = e.uploader
-                    )
-                }
-
-                val infoDto = com.example.extraction.model.YtDlpInfoDto(
-                    id = metadata.id,
-                    title = metadata.title,
-                    webpageUrl = metadata.webpageUrl,
-                    uploader = metadata.uploader,
-                    channel = metadata.channel,
-                    duration = metadata.durationSeconds,
-                    viewCount = metadata.viewCount,
-                    likeCount = metadata.likeCount,
-                    uploadDate = metadata.uploadDate,
-                    description = metadata.description,
-                    thumbnail = metadata.thumbnail,
-                    type = if (metadata.isPlaylist) "playlist" else null,
-                    extractor = metadata.extractorName,
-                    formats = formatsDto,
-                    entries = entriesDto
-                )
-
+                val infoDto = cliResult.getOrThrow()
                 val candidates = CandidateNormalizer.fromYtDlpInfo(infoDto, url, decision.intent)
                 val canonicalMeta = com.example.core.model.CanonicalMetadata(
-                    title = metadata.title,
-                    uploader = metadata.uploader,
-                    channel = metadata.channel,
-                    durationSeconds = metadata.durationSeconds,
-                    viewCount = metadata.viewCount,
-                    likeCount = metadata.likeCount,
-                    uploadDate = metadata.uploadDate,
-                    description = metadata.description,
-                    thumbnail = metadata.thumbnail,
-                    isPlaylist = metadata.isPlaylist,
-                    playlistCount = metadata.playlistCount,
-                    playlistEntries = metadata.playlistEntries,
-                    subtitles = metadata.subtitles,
-                    extractorName = metadata.extractorName,
-                    directDownloadUrl = metadata.directDownloadUrl
+                    title = infoDto.title,
+                    uploader = infoDto.uploader,
+                    channel = infoDto.channel,
+                    durationSeconds = infoDto.duration,
+                    viewCount = infoDto.viewCount,
+                    likeCount = infoDto.likeCount,
+                    uploadDate = infoDto.uploadDate,
+                    description = infoDto.description,
+                    thumbnail = infoDto.thumbnail,
+                    isPlaylist = infoDto.isPlaylist,
+                    playlistCount = if (infoDto.isPlaylist) infoDto.entries.size else 0,
+                    playlistEntries = infoDto.entries.map { e ->
+                        com.example.data.model.PlaylistEntry(
+                            id = e.id,
+                            title = e.title,
+                            url = e.url,
+                            durationSeconds = e.duration,
+                            thumbnail = e.thumbnail,
+                            uploader = e.uploader
+                        )
+                    },
+                    subtitles = infoDto.subtitles.map { s ->
+                        com.example.data.model.SubtitleTrack(
+                            language = s.language,
+                            name = s.name ?: s.language.uppercase(),
+                            ext = s.ext,
+                            url = s.url,
+                            isAutoGenerated = false
+                        )
+                    },
+                    extractorName = infoDto.extractor ?: (if (infoDto.isPlaylist) "yt-dlp:playlist" else "yt-dlp"),
+                    directDownloadUrl = null,
+                    filesize = infoDto.filesize,
+                    filesizeApprox = infoDto.filesizeApprox,
+                    overallSize = com.example.core.model.MetadataNormalizer.resolveMediaSize(infoDto.filesize, infoDto.filesizeApprox)
                 )
                 ExtractionEvidence(candidates = candidates, metadata = canonicalMeta)
 

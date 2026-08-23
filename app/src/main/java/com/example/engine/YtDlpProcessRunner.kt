@@ -29,13 +29,25 @@ object YtDlpProcessRunner {
         customArgs: String = "",
         traceId: String? = null
     ): Result<MediaMetadata> {
+        return extractInfoDto(binaryPath, url, cookiesPath, customArgs, traceId).map { dto ->
+            com.example.extraction.YtDlpMetadataMapper.mapToMediaMetadata(dto, url)
+        }
+    }
+
+    suspend fun extractInfoDto(
+        binaryPath: String,
+        url: String,
+        cookiesPath: String? = null,
+        customArgs: String = "",
+        traceId: String? = null
+    ): Result<com.example.extraction.model.YtDlpInfoDto> {
         val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
         val opId = if (effectiveTraceId != null) {
             MediaExtractionTracer.startOperation(
                 traceId = effectiveTraceId,
                 component = "YtDlpProcessRunner",
                 stage = "YTDLP_CLI_EXTRACTION",
-                name = "extractMetadataCli",
+                name = "extractInfoDto",
                 details = mapOf(
                     "url" to url,
                     "cookiesConfigured" to (!cookiesPath.isNullOrBlank()).toString(),
@@ -107,9 +119,9 @@ object YtDlpProcessRunner {
 
             val json = JSONObject(stdout)
             val isPlaylistDetected = json.optString("_type") == "playlist" || (json.has("entries") && !json.isNull("entries"))
-            val metadata = parseYtDlpJson(json, url)
+            val dto = com.example.extraction.YtDlpJsonParser.parse(json, url)
 
-            if (isPlaylistDetected && metadata.playlistEntries.isEmpty()) {
+            if (isPlaylistDetected && dto.entries.isEmpty()) {
                 AppLogger.e("YtDlpProcessRunner", "Playlist contains no accessible videos or is private")
                 if (effectiveTraceId != null && opId != null) {
                     MediaExtractionTracer.endOperation(
@@ -127,20 +139,20 @@ object YtDlpProcessRunner {
                 MediaExtractionTracer.endOperation(
                     traceId = effectiveTraceId,
                     opId = opId,
-                    result = "${metadata.title} (formats=${metadata.formats.size}, entries=${metadata.playlistEntries.size})",
+                    result = "${dto.title} (formats=${dto.formats.size}, entries=${dto.entries.size})",
                     decision = "METADATA_PARSED",
                     reason = "Successfully extracted JSON from yt-dlp",
                     details = mapOf(
-                        "title" to metadata.title,
-                        "extractor" to metadata.extractorName,
-                        "formatsCount" to metadata.formats.size.toString(),
-                        "isPlaylist" to metadata.isPlaylist.toString(),
-                        "entriesCount" to metadata.playlistEntries.size.toString()
+                        "title" to dto.title,
+                        "extractor" to (dto.extractor ?: "generic"),
+                        "formatsCount" to dto.formats.size.toString(),
+                        "isPlaylist" to dto.isPlaylist.toString(),
+                        "entriesCount" to dto.entries.size.toString()
                     )
                 )
             }
 
-            Result.success(metadata)
+            Result.success(dto)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) {
                 try {

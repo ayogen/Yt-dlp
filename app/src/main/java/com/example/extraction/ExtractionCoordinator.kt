@@ -47,8 +47,12 @@ class ExtractionCoordinator(
                 }
 
                 // If we found a verified primary video/audio or direct stream, we have strong primary evidence
-                val hasPrimary = evidence.candidates.any { it.role.isPrimary }
-                if (hasPrimary && (strategy.name == "YTDLP" || strategy.name == "DIRECT_MEDIA")) {
+                val hasUsablePrimary = evidence.candidates.any {
+                    it.role.isPrimary && (it.formats.isNotEmpty() || it.mediaType == com.example.data.model.MediaType.IMAGE ||
+                            it.mediaType == com.example.data.model.MediaType.PLAYLIST ||
+                            it.source == com.example.core.model.CandidateSource.DIRECT_HTTP)
+                }
+                if (hasUsablePrimary && (strategy.name == "YTDLP" || strategy.name == "DIRECT_MEDIA")) {
                     AppLogger.i("ExtractionCoordinator", "Found authoritative primary candidate via ${strategy.name}")
                     break
                 }

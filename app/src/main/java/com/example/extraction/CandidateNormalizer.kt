@@ -28,31 +28,35 @@ object CandidateNormalizer {
             else -> MediaRole.PRIMARY_VIDEO
         }
         val mediaType = when {
-            dto.isPlaylist -> MediaType.VIDEO
+            dto.isPlaylist -> MediaType.PLAYLIST
             isAudioIntent -> MediaType.AUDIO
             else -> MediaType.VIDEO
         }
 
-        // Primary candidate from yt-dlp
-        candidates.add(
-            MediaCandidate(
-                id = dto.id,
-                source = CandidateSource.YTDLP,
-                role = role,
-                mediaType = mediaType,
-                url = dto.webpageUrl ?: pageUrl,
-                pageUrl = pageUrl,
-                title = dto.title,
-                uploader = dto.uploader,
-                durationSeconds = dto.duration,
-                thumbnail = dto.thumbnail,
-                description = dto.description,
-                formats = formats,
-                confidence = Confidence(ConfidenceTier.VERIFIED, 100, "Extracted via yt-dlp"),
-                isDownloadable = true,
-                provenance = mapOf("extractor" to (dto.extractor ?: "yt-dlp"))
+        // Only create a primary candidate if formats are present, it's a playlist with entries, or direct download URL exists
+        val hasPlayableContent = formats.isNotEmpty() || (dto.isPlaylist && dto.entries.isNotEmpty()) || !dto.directDownloadUrl.isNullOrBlank()
+        if (hasPlayableContent) {
+            candidates.add(
+                MediaCandidate(
+                    id = dto.id,
+                    source = CandidateSource.YTDLP,
+                    role = role,
+                    mediaType = mediaType,
+                    url = dto.webpageUrl ?: pageUrl,
+                    pageUrl = pageUrl,
+                    title = dto.title,
+                    uploader = dto.uploader,
+                    durationSeconds = dto.duration,
+                    thumbnail = dto.thumbnail,
+                    description = dto.description,
+                    formats = formats,
+                    size = MetadataNormalizer.resolveMediaSize(dto.filesize, dto.filesizeApprox),
+                    confidence = Confidence(ConfidenceTier.VERIFIED, 100, "Extracted via yt-dlp"),
+                    isDownloadable = true,
+                    provenance = mapOf("extractor" to (dto.extractor ?: "yt-dlp"))
+                )
             )
-        )
+        }
 
         // Thumbnail candidate (if present)
         if (dto.thumbnail.isNotBlank()) {
@@ -81,22 +85,39 @@ object CandidateNormalizer {
         pageUrl: String,
         mimeType: String? = null,
         contentLength: Long? = null,
-        isAudio: Boolean = false
+        isAudio: Boolean = false,
+        isImage: Boolean = false
     ): MediaCandidate {
-        val ext = url.substringBefore("?").substringAfterLast(".", if (isAudio) "mp3" else "mp4")
+        val clean = url.substringBefore("#").substringBefore("?")
+        val ext = clean.substringAfterLast(".", if (isAudio) "mp3" else if (isImage) "jpg" else "mp4")
         val size = MetadataNormalizer.resolveMediaSize(null, null, contentLength)
-        val mediaType = if (isAudio) MediaType.AUDIO else MediaType.VIDEO
+        val mediaType = when {
+            isImage || mimeType?.startsWith("image/") == true -> MediaType.IMAGE
+            isAudio || mimeType?.startsWith("audio/") == true -> MediaType.AUDIO
+            else -> MediaType.VIDEO
+        }
         val role = MediaRole.DIRECT_MEDIA
 
         val format = MediaFormat(
-            formatId = if (isAudio) "direct-audio" else "direct-video",
+            formatId = when (mediaType) {
+                MediaType.IMAGE -> "direct-image"
+                MediaType.AUDIO -> "direct-audio"
+                else -> "direct-video"
+            },
             ext = ext,
-            resolution = if (isAudio) "Audio Only" else "Direct Stream",
+            resolution = when (mediaType) {
+                MediaType.IMAGE -> "Image"
+                MediaType.AUDIO -> "Audio Only"
+                else -> "Direct Stream"
+            },
             size = size,
             url = url,
-            isAudioOnly = isAudio,
-            isVideoOnly = !isAudio
+            isAudioOnly = mediaType == MediaType.AUDIO,
+            isVideoOnly = mediaType == MediaType.VIDEO
         )
+
+        val fileName = clean.substringAfterLast("/").ifBlank { "Direct Media" }
+        val title = if (fileName.contains(".")) fileName.substringBeforeLast(".") else fileName
 
         return MediaCandidate(
             id = Math.abs(url.hashCode()).toString(),
@@ -106,7 +127,7 @@ object CandidateNormalizer {
             url = url,
             pageUrl = pageUrl,
             mimeType = mimeType,
-            title = url.substringBefore("?").substringAfterLast("/").ifBlank { "Direct Media" },
+            title = title,
             formats = listOf(format),
             size = size,
             confidence = Confidence(ConfidenceTier.VERIFIED, 100, "Direct HTTP inspection verified"),

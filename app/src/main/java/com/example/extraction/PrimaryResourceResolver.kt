@@ -35,9 +35,24 @@ object PrimaryResourceResolver {
 
         val rejected = mutableListOf<MediaCandidate>()
 
-        // 1. Explicit yt-dlp primary video/audio candidate
+        // 1. Verified direct media candidate (highest priority for direct media URLs)
+        val directMediaPrimary = candidates.firstOrNull {
+            it.source == com.example.core.model.CandidateSource.DIRECT_HTTP && (it.role == MediaRole.DIRECT_MEDIA || it.role.isPrimary)
+        }
+        if (directMediaPrimary != null) {
+            rejected.addAll(candidates.filter { it.id != directMediaPrimary.id && it.id != thumbnailCandidate?.id })
+            return ResolutionDecision(
+                primaryCandidate = directMediaPrimary,
+                thumbnailCandidate = thumbnailCandidate,
+                rejectedCandidates = rejected,
+                reason = "Selected verified direct media stream"
+            )
+        }
+
+        // 2. Explicit yt-dlp primary video/audio candidate (must have playable formats or be a playlist)
         val ytdlpPrimary = candidates.firstOrNull {
-            it.source == com.example.core.model.CandidateSource.YTDLP && it.role.isPrimary
+            it.source == com.example.core.model.CandidateSource.YTDLP && it.role.isPrimary &&
+                    (it.formats.isNotEmpty() || it.mediaType == MediaType.PLAYLIST)
         }
         if (ytdlpPrimary != null) {
             rejected.addAll(candidates.filter { it.id != ytdlpPrimary.id && it.id != thumbnailCandidate?.id })
@@ -49,7 +64,7 @@ object PrimaryResourceResolver {
             )
         }
 
-        // 2. Explicit platform strategy candidate
+        // 3. Explicit platform strategy candidate
         val platformPrimary = candidates.firstOrNull {
             it.source == com.example.core.model.CandidateSource.PLATFORM && it.role.isPrimary
         }
@@ -60,20 +75,6 @@ object PrimaryResourceResolver {
                 thumbnailCandidate = thumbnailCandidate,
                 rejectedCandidates = rejected,
                 reason = "Selected primary candidate from platform strategy"
-            )
-        }
-
-        // 3. Verified direct media candidate
-        val directMediaPrimary = candidates.firstOrNull {
-            it.source == com.example.core.model.CandidateSource.DIRECT_HTTP && it.role == MediaRole.DIRECT_MEDIA
-        }
-        if (directMediaPrimary != null) {
-            rejected.addAll(candidates.filter { it.id != directMediaPrimary.id && it.id != thumbnailCandidate?.id })
-            return ResolutionDecision(
-                primaryCandidate = directMediaPrimary,
-                thumbnailCandidate = thumbnailCandidate,
-                rejectedCandidates = rejected,
-                reason = "Selected verified direct media stream"
             )
         }
 
@@ -150,7 +151,10 @@ object PrimaryResourceResolver {
                 playlistEntries = fallbackMetadata.playlistEntries,
                 subtitles = fallbackMetadata.subtitles,
                 extractorName = fallbackMetadata.extractorName,
-                directDownloadUrl = if (primary.role == MediaRole.DIRECT_MEDIA) primary.url else fallbackMetadata.directDownloadUrl
+                directDownloadUrl = if (primary.role == MediaRole.DIRECT_MEDIA) primary.url else fallbackMetadata.directDownloadUrl,
+                filesize = fallbackMetadata.filesize ?: (primary.size.bytesOrNull.takeIf { !primary.size.isApproximate }),
+                filesizeApprox = fallbackMetadata.filesizeApprox ?: (primary.size.bytesOrNull.takeIf { primary.size.isApproximate }),
+                overallSize = if (fallbackMetadata.overallSize.isKnown) fallbackMetadata.overallSize else primary.size
             )
         } else {
             fallbackMetadata.copy(

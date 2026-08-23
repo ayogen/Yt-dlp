@@ -54,7 +54,8 @@ object YtDlpMetadataMapper {
             playlistEntries = playlistEntries,
             formats = formats,
             subtitles = subtitles,
-            extractorName = dto.extractor ?: if (hasValidPlaylistEntries) "yt-dlp:playlist" else "yt-dlp"
+            extractorName = dto.extractor ?: if (hasValidPlaylistEntries) "yt-dlp:playlist" else "yt-dlp",
+            fileSize = dto.filesize ?: dto.filesizeApprox
         )
     }
 

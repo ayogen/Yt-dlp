@@ -19,7 +19,10 @@ data class CanonicalMetadata(
     val playlistEntries: List<PlaylistEntry> = emptyList(),
     val subtitles: List<SubtitleTrack> = emptyList(),
     val extractorName: String = "generic",
-    val directDownloadUrl: String? = null
+    val directDownloadUrl: String? = null,
+    val filesize: Long? = null,
+    val filesizeApprox: Long? = null,
+    val overallSize: MediaSize = MediaSize.Unknown()
 )
 
 data class CanonicalMediaResult(
@@ -56,6 +59,8 @@ data class CanonicalMediaResult(
             else -> com.example.data.model.MediaType.VIDEO
         }
 
+        val resolvedFileSize = metadata.filesize ?: metadata.filesizeApprox ?: (primary?.size?.bytesOrNull)
+
         return MediaMetadata(
             id = primary?.id ?: Math.abs(canonicalUrl.hashCode()).toString(),
             title = metadata.title.ifBlank { primary?.title ?: "Media" },
@@ -75,7 +80,8 @@ data class CanonicalMediaResult(
             subtitles = metadata.subtitles,
             extractorName = metadata.extractorName,
             directDownloadUrl = effectiveDirectUrl,
-            mediaType = resolvedMediaType
+            mediaType = resolvedMediaType,
+            fileSize = resolvedFileSize
         )
 
     }
@@ -104,7 +110,9 @@ data class CanonicalMediaResult(
                 playlistEntries = metadata.playlistEntries,
                 subtitles = metadata.subtitles,
                 extractorName = metadata.extractorName,
-                directDownloadUrl = metadata.directDownloadUrl
+                directDownloadUrl = metadata.directDownloadUrl,
+                filesize = metadata.fileSize,
+                overallSize = MediaSize.fromBytes(metadata.fileSize, null)
             )
 
             return CanonicalMediaResult(

@@ -31,6 +31,11 @@ class DirectMediaStrategy(
             return@withContext ExtractionEvidence()
         }
 
+        val clean = url.substringBefore("#").substringBefore("?").lowercase()
+        val ext = clean.substringAfterLast(".", "")
+        var isImage = EmbeddedExtractorEngine.isDirectImageExtension(ext)
+        var isAudio = EmbeddedExtractorEngine.isDirectAudioExtension(ext)
+
         try {
             var contentLength: Long? = null
             var mimeType: String? = null
@@ -40,11 +45,21 @@ class DirectMediaStrategy(
                 if (response.isSuccessful) {
                     contentLength = response.header("Content-Length")?.toLongOrNull()
                     mimeType = response.header("Content-Type")
-                }
-            }
 
-            val isAudio = url.substringBefore("?").lowercase().let {
-                it.endsWith(".mp3") || it.endsWith(".m4a") || it.endsWith(".opus") || it.endsWith(".wav") || it.endsWith(".flac")
+                    val ct = mimeType?.lowercase() ?: ""
+                    if (ct.contains("text/html") || ct.contains("application/xhtml+xml")) {
+                        // Not a direct media file despite extension/URL; delegate to other strategies
+                        return@withContext ExtractionEvidence()
+                    }
+
+                    if (ct.startsWith("image/")) {
+                        isImage = true
+                        isAudio = false
+                    } else if (ct.startsWith("audio/")) {
+                        isAudio = true
+                        isImage = false
+                    }
+                }
             }
 
             val candidate = CandidateNormalizer.fromDirectMedia(
@@ -52,14 +67,24 @@ class DirectMediaStrategy(
                 pageUrl = url,
                 mimeType = mimeType,
                 contentLength = contentLength,
-                isAudio = isAudio
+                isAudio = isAudio,
+                isImage = isImage
             )
 
             ExtractionEvidence(candidates = listOf(candidate))
         } catch (e: Exception) {
+            // Even if HEAD fails (e.g. server does not support HEAD), if extension is direct media create candidate
+            val candidate = CandidateNormalizer.fromDirectMedia(
+                url = url,
+                pageUrl = url,
+                mimeType = null,
+                contentLength = null,
+                isAudio = isAudio,
+                isImage = isImage
+            )
             ExtractionEvidence(
-                warnings = listOf("Direct media head request failed: ${e.message}"),
-                failedStrategies = listOf(name)
+                candidates = listOf(candidate),
+                warnings = listOf("Direct media head request notice: ${e.message}")
             )
         }
     }
