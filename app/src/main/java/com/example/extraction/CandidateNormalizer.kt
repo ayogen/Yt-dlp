@@ -153,7 +153,7 @@ object CandidateNormalizer {
         formats: List<com.example.data.model.FormatInfo> = emptyList()
     ): MediaCandidate {
         val normalizedFormats = if (formats.isNotEmpty()) {
-            formats.map { MetadataNormalizer.normalizeFormat(it) }
+            formats.map { MediaFormat.fromFormatInfo(it) }
         } else {
             listOf(
                 MediaFormat(
