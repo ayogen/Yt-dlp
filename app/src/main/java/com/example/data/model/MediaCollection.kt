@@ -91,6 +91,7 @@ data class MediaCollection(
     val extractorName: String = "generic",
     val description: String = "",
     val uploadDate: String = "",
+    val viewCount: Long? = null,
     val totalCount: Int = items.size
 ) {
     val isSingleItem: Boolean get() = items.size == 1
@@ -144,7 +145,8 @@ data class MediaCollection(
                         items = items,
                         extractorName = meta.extractorName,
                         description = meta.description,
-                        uploadDate = meta.uploadDate
+                        uploadDate = meta.uploadDate,
+                        viewCount = meta.viewCount
                     )
                 }
                 meta.isPlaylist && meta.playlistEntries.isNotEmpty() -> {
@@ -172,7 +174,8 @@ data class MediaCollection(
                         items = items,
                         extractorName = meta.extractorName,
                         description = meta.description,
-                        uploadDate = meta.uploadDate
+                        uploadDate = meta.uploadDate,
+                        viewCount = meta.viewCount
                     )
                 }
                 meta.isImage -> {
@@ -202,7 +205,8 @@ data class MediaCollection(
                         items = listOf(singleItem),
                         extractorName = meta.extractorName,
                         description = meta.description,
-                        uploadDate = meta.uploadDate
+                        uploadDate = meta.uploadDate,
+                        viewCount = meta.viewCount
                     )
                 }
                 meta.isAudioOnly || meta.mediaType == MediaType.AUDIO -> {
@@ -232,7 +236,8 @@ data class MediaCollection(
                         items = listOf(singleItem),
                         extractorName = meta.extractorName,
                         description = meta.description,
-                        uploadDate = meta.uploadDate
+                        uploadDate = meta.uploadDate,
+                        viewCount = meta.viewCount
                     )
                 }
                 else -> {
@@ -270,7 +275,8 @@ data class MediaCollection(
                         items = listOf(singleItem),
                         extractorName = meta.extractorName,
                         description = meta.description,
-                        uploadDate = meta.uploadDate
+                        uploadDate = meta.uploadDate,
+                        viewCount = meta.viewCount
                     )
                 }
             }
@@ -318,7 +324,8 @@ data class MediaCollection(
                     },
                     extractorName = extractorName,
                     description = description,
-                    uploadDate = uploadDate
+                    uploadDate = uploadDate,
+                    viewCount = viewCount
                 )
             }
             isPlaylist -> {
@@ -345,7 +352,8 @@ data class MediaCollection(
                     },
                     extractorName = extractorName,
                     description = description,
-                    uploadDate = uploadDate
+                    uploadDate = uploadDate,
+                    viewCount = viewCount
                 )
             }
             items.firstOrNull()?.isImage == true || mediaKind == MediaKind.IMAGE -> {
@@ -365,7 +373,8 @@ data class MediaCollection(
                     fileSize = item?.fileSize,
                     extractorName = extractorName,
                     description = description,
-                    uploadDate = uploadDate
+                    uploadDate = uploadDate,
+                    viewCount = viewCount
                 )
             }
             items.firstOrNull()?.isAudio == true || mediaKind == MediaKind.AUDIO -> {
@@ -385,7 +394,8 @@ data class MediaCollection(
                     fileSize = item?.fileSize,
                     extractorName = extractorName,
                     description = description,
-                    uploadDate = uploadDate
+                    uploadDate = uploadDate,
+                    viewCount = viewCount
                 )
             }
             else -> {
@@ -407,7 +417,8 @@ data class MediaCollection(
                     fileSize = item?.fileSize,
                     extractorName = extractorName,
                     description = description,
-                    uploadDate = uploadDate
+                    uploadDate = uploadDate,
+                    viewCount = viewCount
                 )
             }
         }

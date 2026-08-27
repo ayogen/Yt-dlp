@@ -265,4 +265,26 @@ class CanonicalCollectionPhase6Test {
         assertEquals(256, req.audioBitrate)
         assertTrue(req.formatDescription.contains("256kbps"))
     }
+
+    @Test
+    fun `test viewCount and uploadDate propagation from MediaMetadata through MediaCollection to AnalysisUiModel`() {
+        val meta = MediaMetadata(
+            id = "vid_views_test",
+            title = "Popular Video",
+            webpageUrl = "https://example.com/video",
+            uploader = "TopCreator",
+            viewCount = 1500000L,
+            uploadDate = "20240115",
+            mediaType = MediaType.VIDEO
+        )
+
+        val collection = MediaCollection.fromMediaMetadata(meta)
+        assertEquals(1500000L, collection.viewCount)
+        assertEquals("20240115", collection.uploadDate)
+
+        val uiModel = MediaUiMapper.mapCollectionToUiModel(collection)
+        assertEquals(1500000L, uiModel.viewCount)
+        assertEquals("20240115", uiModel.uploadDate)
+        assertEquals("TopCreator", uiModel.uploader)
+    }
 }

@@ -58,7 +58,9 @@ data class AnalysisUiModel(
     val isMixedCollection: Boolean,
     val totalCount: Int,
     val selectedCount: Int,
-    val failedCount: Int
+    val failedCount: Int,
+    val uploadDate: String = "",
+    val viewCount: Long? = null
 ) {
     val isImage: Boolean get() = mediaKind == MediaKind.IMAGE || (isSingleItem && items.firstOrNull()?.isImage == true)
     val isVideo: Boolean get() = mediaKind == MediaKind.VIDEO || (isSingleItem && items.firstOrNull()?.isVideo == true)
@@ -141,7 +143,9 @@ object MediaUiMapper {
             isMixedCollection = collection.isMixedCollection,
             totalCount = collection.items.size,
             selectedCount = itemsUi.count { it.isSelected },
-            failedCount = itemsUi.count { it.isFailed }
+            failedCount = itemsUi.count { it.isFailed },
+            uploadDate = collection.uploadDate,
+            viewCount = collection.viewCount
         )
     }
 
