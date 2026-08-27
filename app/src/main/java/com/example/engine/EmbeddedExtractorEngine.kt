@@ -88,11 +88,15 @@ object EmbeddedExtractorEngine {
     }
 
     fun isDirectMediaUrl(url: String): Boolean {
-        val clean = url.substringBefore("?").lowercase()
-        return clean.endsWith(".mp4") || clean.endsWith(".mkv") || clean.endsWith(".webm") ||
-                clean.endsWith(".mp3") || clean.endsWith(".m4a") || clean.endsWith(".opus") ||
-                clean.endsWith(".wav") || clean.endsWith(".flac") || clean.endsWith(".m3u8") ||
-                clean.endsWith(".ts")
+        return MediaTypeResolver.isDirectMediaUrl(url)
+    }
+
+    fun isDirectImageExtension(ext: String): Boolean {
+        return MediaTypeResolver.isExplicitImageUrl("media.$ext")
+    }
+
+    fun isDirectAudioExtension(ext: String): Boolean {
+        return MediaTypeResolver.isExplicitAudioUrl("media.$ext")
     }
 
     private suspend fun extractDirectMediaCollection(url: String): Result<MediaCollection> {

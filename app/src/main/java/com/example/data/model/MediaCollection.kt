@@ -275,6 +275,11 @@ data class MediaCollection(
                 }
             }
         }
+
+        /**
+         * Adapter from canonical MediaCollection back to legacy MediaMetadata.
+         */
+        fun toLegacyMediaMetadata(collection: MediaCollection): MediaMetadata = collection.toMediaMetadata()
     }
 
     /**

@@ -19,6 +19,7 @@ data class MediaItemUiModel(
     val sourceUrl: String,
     val thumbnail: String,
     val mediaKind: MediaKind,
+    val durationSeconds: Long = 0L,
     val durationFormatted: String,
     val dimensionsFormatted: String,
     val displayFileSize: String,
@@ -58,7 +59,23 @@ data class AnalysisUiModel(
     val totalCount: Int,
     val selectedCount: Int,
     val failedCount: Int
-)
+) {
+    val isImage: Boolean get() = mediaKind == MediaKind.IMAGE || (isSingleItem && items.firstOrNull()?.isImage == true)
+    val isVideo: Boolean get() = mediaKind == MediaKind.VIDEO || (isSingleItem && items.firstOrNull()?.isVideo == true)
+    val isAudio: Boolean get() = mediaKind == MediaKind.AUDIO || (isSingleItem && items.firstOrNull()?.isAudio == true)
+    val formats: List<FormatInfo> get() = primaryFormats
+    val durationSeconds: Long get() = items.firstOrNull()?.durationSeconds ?: 0L
+    val durationFormatted: String get() = items.firstOrNull()?.durationFormatted.orEmpty()
+    val displayFileSize: String get() = items.firstOrNull()?.displayFileSize ?: "Unknown size"
+    val sizeProvenance: SizeProvenance get() = items.firstOrNull()?.sizeProvenance ?: SizeProvenance.UNKNOWN
+    val primaryMediaType: MediaType get() = when {
+        isCarousel -> MediaType.CAROUSEL
+        isPlaylist -> MediaType.PLAYLIST
+        isImage -> MediaType.IMAGE
+        isAudio -> MediaType.AUDIO
+        else -> MediaType.VIDEO
+    }
+}
 
 /**
  * Mapper between domain media collections/metadata and AnalysisUiModel.
@@ -84,6 +101,7 @@ object MediaUiMapper {
                 sourceUrl = item.sourceUrl,
                 thumbnail = item.thumbnail.ifBlank { collection.thumbnail },
                 mediaKind = item.mediaKind,
+                durationSeconds = item.durationSeconds,
                 durationFormatted = item.durationFormatted,
                 dimensionsFormatted = dimensions,
                 displayFileSize = item.displayFileSize,

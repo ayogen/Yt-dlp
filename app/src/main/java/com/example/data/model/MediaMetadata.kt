@@ -272,8 +272,12 @@ data class FormatInfo(
     val protocol: String = "https",
     val isVideoOnly: Boolean = (vcodec != "none" && vcodec.isNotBlank()) && (acodec == "none" || acodec.isBlank()),
     val isAudioOnly: Boolean = (acodec != "none" && acodec.isNotBlank()) && (vcodec == "none" || vcodec.isBlank()),
-    val isMuxed: Boolean = (vcodec != "none" && vcodec.isNotBlank()) && (acodec != "none" && acodec.isNotBlank())
+    val isMuxed: Boolean = (vcodec != "none" && vcodec.isNotBlank()) && (acodec != "none" && acodec.isNotBlank()),
+    val isDirectVideo: Boolean = isMuxed || isVideoOnly
 ) {
+    val effectiveBitrate: Double?
+        get() = tbr ?: ((vbr ?: 0.0) + (abr ?: 0.0)).takeIf { it > 0.0 } ?: vbr ?: abr
+
     val displayResolution: String
         get() = when {
             height != null && height > 0 -> "${height}p"

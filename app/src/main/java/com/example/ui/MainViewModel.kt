@@ -534,6 +534,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _analysisState.value = AnalysisUiState.Idle
     }
 
+    fun cancelAnalysis() {
+        analysisJob?.cancel()
+        _analysisState.value = AnalysisUiState.Idle
+        _toastMessage.value = "Analysis cancelled"
+    }
+
     fun startDownloadWithCollection(
         collection: MediaCollection,
         selectedFormat: FormatInfo?,
