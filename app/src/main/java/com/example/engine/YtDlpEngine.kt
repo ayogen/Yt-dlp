@@ -6,7 +6,6 @@ import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.download.StorageUtils
-import com.example.extraction.ExtractionCoordinator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -20,55 +19,43 @@ data class EngineDiagnosticError(
 
 class YtDlpEngine(private val context: Context) {
 
-    private val extractionCoordinator = ExtractionCoordinator(context)
+    private val extractionEngine = MediaExtractionEngine(context)
 
-    suspend fun analyzeUrl(url: String, settings: AppSettings, traceId: String? = null): Result<MediaMetadata> = withContext(Dispatchers.IO) {
-        val effectiveTraceId = traceId ?: MediaExtractionTracer.startSession(url).traceId
-        val opId = MediaExtractionTracer.startOperation(
-            traceId = effectiveTraceId,
-            component = "YtDlpEngine",
-            stage = "ANALYZE_URL",
-            name = "analyzeUrl",
-            details = mapOf("url" to url)
+    suspend fun analyzeMediaCollection(url: String, settings: AppSettings): Result<com.example.data.model.MediaCollection> = withContext(Dispatchers.IO) {
+        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
+        AppLogger.i("YtDlpEngine", "Starting canonical media analysis for: $resolvedUrl (original: $url)")
+
+        // Ensure yt-dlp runtime is initialized in background
+        YtDlpBinaryManager.ensureInitialized(context)
+
+        val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
+
+        extractionEngine.extractMediaCollection(
+            url = resolvedUrl,
+            cookiesFile = cookiesFile,
+            userAgent = null,
+            proxyUrl = null,
+            geoBypass = true
         )
+    }
 
-        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url, effectiveTraceId)
+    suspend fun analyzeUrl(url: String, settings: AppSettings): Result<MediaMetadata> = withContext(Dispatchers.IO) {
+        val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
         AppLogger.i("YtDlpEngine", "Starting universal media analysis for: $resolvedUrl (original: $url)")
 
         // Ensure yt-dlp runtime is initialized in background
         YtDlpBinaryManager.ensureInitialized(context)
 
-        val canonicalResult = extractionCoordinator.extract(
+        val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
+
+        extractionEngine.extractMedia(
             url = resolvedUrl,
-            settings = settings
+            cookiesFile = cookiesFile,
+            userAgent = null,
+            proxyUrl = null,
+            geoBypass = true
         )
-
-        if (canonicalResult.isSuccess) {
-            val canonical = canonicalResult.getOrThrow()
-            val meta = canonical.toMediaMetadata()
-            MediaExtractionTracer.endOperation(
-                traceId = effectiveTraceId,
-                opId = opId,
-                result = meta.title,
-                decision = "SUCCESS",
-                reason = "Successfully extracted canonical media metadata"
-            )
-            MediaExtractionTracer.completeSession(effectiveTraceId, meta)
-            Result.success(meta)
-        } else {
-            val err = canonicalResult.exceptionOrNull() ?: Exception("Unknown extraction error")
-            MediaExtractionTracer.endOperation(
-                traceId = effectiveTraceId,
-                opId = opId,
-                error = err,
-                decision = "FAILURE",
-                reason = err.message
-            )
-            MediaExtractionTracer.failSession(effectiveTraceId, err.message ?: "Unknown extraction error")
-            Result.failure(err)
-        }
     }
-
 
     suspend fun executeDownload(
         task: DownloadTaskEntity,
@@ -135,7 +122,7 @@ class YtDlpEngine(private val context: Context) {
             if (validation.isFailure) {
                 val err = validation.exceptionOrNull() ?: Exception("Media validation failed")
                 AppLogger.e("YtDlpEngine", "Downloaded file validation failed: ${err.message}", taskId)
-                try { completedFile.delete() } catch (_: Exception) {}
+                try { completedFile.delete() } catch (e: Exception) {}
                 return Result.failure(err)
             }
 
@@ -180,7 +167,7 @@ class YtDlpEngine(private val context: Context) {
             if (cliResult.isFailure && task.embedThumbnail && !isCancelled()) {
                 val failureMsg = cliResult.exceptionOrNull()?.message ?: ""
                 AppLogger.w("YtDlpEngine", "Initial download attempt with thumbnail embedding failed ($failureMsg). Retrying cleanly without thumbnail embedding...", taskId)
-
+                
                 cliResult = YtDlpProcessRunner.runDownloadCli(
                     taskId = taskId,
                     binaryPath = "",

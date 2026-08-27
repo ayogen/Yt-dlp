@@ -23,9 +23,12 @@ import com.example.data.model.EngineState
 import com.example.data.model.FormatInfo
 import com.example.data.model.HistorySortOrder
 import com.example.data.model.LogEntryEntity
+import com.example.data.model.MediaCollection
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
+import com.example.download.DownloadPlanner
+import com.example.download.DownloadPlanningOptions
 import com.example.download.StorageUtils
 import com.example.engine.AppLogger
 import com.example.engine.EngineDiagnosticError
@@ -51,7 +54,10 @@ import java.util.UUID
 sealed class AnalysisUiState {
     object Idle : AnalysisUiState()
     object Analyzing : AnalysisUiState()
-    data class Success(val metadata: MediaMetadata) : AnalysisUiState()
+    data class Success(
+        val collection: com.example.data.model.MediaCollection,
+        val metadata: MediaMetadata = com.example.data.model.MediaCollection.toLegacyMediaMetadata(collection)
+    ) : AnalysisUiState()
     data class Error(val error: EngineDiagnosticError) : AnalysisUiState()
 }
 
@@ -502,7 +508,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _analysisState.value = AnalysisUiState.Analyzing
             AppLogger.i("MainViewModel", "Analyzing: $url")
             try {
-                val result = repository.analyzeUrl(url)
+                val result = repository.analyzeMediaCollection(url)
                 if (result.isSuccess) {
                     _analysisState.value = AnalysisUiState.Success(result.getOrThrow())
                 } else {
@@ -528,10 +534,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _analysisState.value = AnalysisUiState.Idle
     }
 
-    fun cancelAnalysis() {
-        analysisJob?.cancel()
-        _analysisState.value = AnalysisUiState.Idle
-        _toastMessage.value = "Analysis cancelled"
+    fun startDownloadWithCollection(
+        collection: MediaCollection,
+        selectedFormat: FormatInfo?,
+        mediaType: MediaType,
+        targetContainer: OutputContainer,
+        audioBitrate: Int?,
+        embedSubs: Boolean,
+        embedThumbnail: Boolean,
+        selectedIndices: Set<Int> = emptySet(),
+        qualityLabel: String = "Best"
+    ) {
+        viewModelScope.launch {
+            val options = DownloadPlanningOptions(
+                selectedFormat = selectedFormat,
+                targetMediaType = mediaType,
+                targetContainer = targetContainer,
+                audioBitrate = audioBitrate,
+                embedSubtitles = embedSubs,
+                embedThumbnail = embedThumbnail,
+                selectedIndices = selectedIndices,
+                qualityLabel = qualityLabel
+            )
+            val plan = DownloadPlanner.planDownloads(collection, options)
+            val tasks = plan.requests.map { req ->
+                DownloadTaskEntity(
+                    id = req.id,
+                    url = req.sourceUrl,
+                    title = req.title,
+                    thumbnail = req.thumbnail,
+                    status = DownloadStatus.QUEUED,
+                    formatId = req.formatId,
+                    formatDescription = req.formatDescription,
+                    qualityLabel = req.qualityLabel,
+                    totalBytes = req.totalBytes,
+                    mediaType = req.mediaType,
+                    isPlaylist = req.isPlaylist,
+                    playlistIndex = req.playlistIndex,
+                    playlistTotal = req.playlistTotal,
+                    audioBitrate = if (req.mediaType == MediaType.AUDIO) (req.audioBitrate ?: audioBitrate) else null,
+                    targetContainer = req.targetContainer,
+                    embedSubs = req.embedSubs,
+                    embedThumbnail = req.embedThumbnail
+                )
+            }
+
+            if (tasks.size > 1) {
+                repository.startOrEnqueueDownloads(tasks)
+                val label = if (collection.isPlaylist) "playlist" else if (collection.isCarousel) "carousel" else "collection"
+                val modeLabel = if (mediaType == MediaType.AUDIO) "audio " else ""
+                _toastMessage.value = "Enqueued ${tasks.size} $label $modeLabel items".trim()
+            } else if (tasks.size == 1) {
+                val task = tasks.first()
+                repository.startOrEnqueueDownload(task)
+                val typeDesc = if (task.mediaType == MediaType.IMAGE) "Image download" else "Download"
+                _toastMessage.value = "$typeDesc started: ${task.title.take(30)}..."
+            }
+
+            _analysisState.value = AnalysisUiState.Idle
+            _currentTab.value = NavigationTab.DOWNLOADS
+        }
     }
 
     fun startDownload(
@@ -545,140 +607,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         selectedPlaylistIndices: Set<Int> = emptySet(),
         qualityLabel: String = "Best"
     ) {
-        viewModelScope.launch {
-            if (metadata.isCarousel && metadata.carouselItems.isNotEmpty() && selectedPlaylistIndices.isNotEmpty()) {
-                // Carousel batch download
-                val tasksToEnqueue = mutableListOf<DownloadTaskEntity>()
-                var idx = 1
-                val totalSelected = selectedPlaylistIndices.size
-
-                selectedPlaylistIndices.sorted().forEach { itemIndex ->
-                    val item = metadata.carouselItems.getOrNull(itemIndex)
-                    if (item != null) {
-                        val itemMediaType = item.mediaType
-                        val itemExt = if (itemMediaType == MediaType.IMAGE) "jpg" else "mp4"
-                        val formatDesc = if (itemMediaType == MediaType.IMAGE) "Original Image (JPG)" else "Video (MP4)"
-
-                        val task = DownloadTaskEntity(
-                            id = UUID.randomUUID().toString(),
-                            url = item.sourceUrl,
-                            title = "${metadata.title} - ${item.title}",
-                            thumbnail = item.thumbnail.ifBlank { metadata.thumbnail },
-                            status = DownloadStatus.QUEUED,
-                            formatId = if (itemMediaType == MediaType.IMAGE) "image_direct" else (selectedFormat?.formatId ?: "best"),
-                            formatDescription = formatDesc,
-                            qualityLabel = if (itemMediaType == MediaType.IMAGE) "Original" else qualityLabel,
-                            totalBytes = item.fileSize ?: 0L,
-                            mediaType = itemMediaType,
-                            isPlaylist = true,
-                            playlistIndex = idx,
-                            playlistTotal = totalSelected,
-                            targetContainer = itemExt,
-                            embedSubs = false,
-                            embedThumbnail = embedThumbnail
-                        )
-                        tasksToEnqueue.add(task)
-                        idx++
-                    }
-                }
-                if (tasksToEnqueue.isNotEmpty()) {
-                    repository.startOrEnqueueDownloads(tasksToEnqueue)
-                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} carousel items"
-                }
-            } else if (metadata.isPlaylist && selectedPlaylistIndices.isNotEmpty()) {
-                val totalSelected = selectedPlaylistIndices.size
-                var idx = 1
-                val tasksToEnqueue = mutableListOf<DownloadTaskEntity>()
-                val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
-
-                selectedPlaylistIndices.sorted().forEach { itemIndex ->
-                    val entry = metadata.playlistEntries.getOrNull(itemIndex)
-                    if (entry != null) {
-                        val formatDesc = if (effectiveMediaType == MediaType.AUDIO) {
-                            "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
-                        } else {
-                            "${selectedFormat?.displayResolution ?: qualityLabel} (${targetContainer.ext.uppercase()})"
-                        }
-
-                        val task = DownloadTaskEntity(
-                            id = UUID.randomUUID().toString(),
-                            url = entry.url,
-                            title = entry.title,
-                            thumbnail = entry.thumbnail.ifBlank { metadata.thumbnail },
-                            status = DownloadStatus.QUEUED,
-                            formatId = if (effectiveMediaType == MediaType.AUDIO) "bestaudio/best" else (selectedFormat?.formatId ?: "best"),
-                            formatDescription = formatDesc,
-                            qualityLabel = if (effectiveMediaType == MediaType.AUDIO) "Audio ${audioBitrate ?: 320}k" else qualityLabel,
-                            mediaType = effectiveMediaType,
-                            isPlaylist = true,
-                            playlistIndex = idx,
-                            playlistTotal = totalSelected,
-                            audioBitrate = if (effectiveMediaType == MediaType.AUDIO) audioBitrate else null,
-                            targetContainer = targetContainer.ext,
-                            embedSubs = embedSubs,
-                            embedThumbnail = embedThumbnail
-                        )
-                        tasksToEnqueue.add(task)
-                        idx++
-                    }
-                }
-                if (tasksToEnqueue.isNotEmpty()) {
-                    repository.startOrEnqueueDownloads(tasksToEnqueue)
-                    val modeLabel = if (effectiveMediaType == MediaType.AUDIO) "audio" else "video"
-                    _toastMessage.value = "Enqueued ${tasksToEnqueue.size} playlist $modeLabel items"
-                }
-            } else if (mediaType == MediaType.IMAGE || metadata.isImage) {
-                // Direct or Single Image Download
-                val downloadUrl = metadata.directDownloadUrl ?: metadata.webpageUrl
-                val ext = if (targetContainer.ext != "auto") targetContainer.ext else "jpg"
-                val task = DownloadTaskEntity(
-                    id = UUID.randomUUID().toString(),
-                    url = downloadUrl,
-                    title = metadata.title,
-                    thumbnail = metadata.thumbnail,
-                    status = DownloadStatus.QUEUED,
-                    formatId = "image_direct",
-                    formatDescription = "Original Image (${ext.uppercase()})",
-                    qualityLabel = "Original",
-                    totalBytes = metadata.fileSize ?: 0L,
-                    mediaType = MediaType.IMAGE,
-                    targetContainer = ext,
-                    embedSubs = false,
-                    embedThumbnail = false
-                )
-                repository.startOrEnqueueDownload(task)
-                _toastMessage.value = "Image download started: ${metadata.title.take(30)}..."
-            } else {
-                val effectiveMediaType = if (mediaType == MediaType.AUDIO) MediaType.AUDIO else MediaType.VIDEO
-                val formatDesc = if (effectiveMediaType == MediaType.AUDIO) {
-                    "Audio (${targetContainer.ext.uppercase()} - ${audioBitrate ?: 320}kbps)"
-                } else {
-                    "${selectedFormat?.displayResolution ?: qualityLabel} (${targetContainer.ext.uppercase()})"
-                }
-
-                val task = DownloadTaskEntity(
-                    id = UUID.randomUUID().toString(),
-                    url = metadata.webpageUrl,
-                    title = metadata.title,
-                    thumbnail = metadata.thumbnail,
-                    status = DownloadStatus.QUEUED,
-                    formatId = if (effectiveMediaType == MediaType.AUDIO) "bestaudio/best" else (selectedFormat?.formatId ?: "best"),
-                    formatDescription = formatDesc,
-                    qualityLabel = if (effectiveMediaType == MediaType.AUDIO) "Audio ${audioBitrate ?: 320}k" else qualityLabel,
-                    totalBytes = selectedFormat?.filesize ?: selectedFormat?.filesizeApprox ?: 0L,
-                    mediaType = effectiveMediaType,
-                    audioBitrate = if (effectiveMediaType == MediaType.AUDIO) audioBitrate else null,
-                    targetContainer = targetContainer.ext,
-                    embedSubs = embedSubs,
-                    embedThumbnail = embedThumbnail
-                )
-                repository.startOrEnqueueDownload(task)
-                _toastMessage.value = "Download started: ${metadata.title.take(30)}..."
-            }
-
-            _analysisState.value = AnalysisUiState.Idle
-            _currentTab.value = NavigationTab.DOWNLOADS
-        }
+        val collection = MediaCollection.fromMediaMetadata(metadata)
+        startDownloadWithCollection(
+            collection = collection,
+            selectedFormat = selectedFormat,
+            mediaType = mediaType,
+            targetContainer = targetContainer,
+            audioBitrate = audioBitrate,
+            embedSubs = embedSubs,
+            embedThumbnail = embedThumbnail,
+            selectedIndices = selectedPlaylistIndices,
+            qualityLabel = qualityLabel
+        )
     }
 
     fun pauseTask(taskId: String) = repository.pauseDownload(taskId)

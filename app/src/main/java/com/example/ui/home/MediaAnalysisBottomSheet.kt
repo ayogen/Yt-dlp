@@ -75,7 +75,6 @@ import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
 import com.example.ui.components.MediaTypeBadge
-import com.example.ui.theme.ElegantAmber
 import com.example.ui.theme.ElegantDarkBorder
 import com.example.ui.theme.ElegantDarkCard
 import com.example.ui.theme.ElegantDarkSurface
@@ -89,7 +88,7 @@ import com.example.ui.theme.ElegantTextTertiary
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MediaAnalysisBottomSheet(
-    metadata: MediaMetadata,
+    uiModel: AnalysisUiModel,
     onDismiss: () -> Unit,
     onDownload: (
         format: FormatInfo?,
@@ -98,38 +97,38 @@ fun MediaAnalysisBottomSheet(
         audioBitrate: Int?,
         embedSubs: Boolean,
         embedThumb: Boolean,
-        playlistSelection: Set<Int>
+        selectedIndices: Set<Int>
     ) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val initialMediaType = remember(metadata) {
+    val initialMediaType = remember(uiModel) {
         when {
-            metadata.isCarousel -> MediaType.CAROUSEL
-            metadata.isPlaylist -> MediaType.PLAYLIST
-            metadata.isImage -> MediaType.IMAGE
-            metadata.mediaType == MediaType.AUDIO -> MediaType.AUDIO
+            uiModel.isCarousel -> MediaType.CAROUSEL
+            uiModel.isPlaylist -> MediaType.PLAYLIST
+            uiModel.isImage -> MediaType.IMAGE
+            uiModel.primaryMediaType == MediaType.AUDIO -> MediaType.AUDIO
             else -> MediaType.VIDEO
         }
     }
 
-    var selectedMediaType by remember(metadata) { mutableStateOf(initialMediaType) }
+    var selectedMediaType by remember(uiModel) { mutableStateOf(initialMediaType) }
     var playlistTargetType by remember { mutableStateOf(MediaType.VIDEO) }
 
-    val deduplicatedVideoFormats = remember(metadata.formats) {
-        deduplicateVideoFormats(metadata.formats)
+    val deduplicatedVideoFormats = remember(uiModel.formats) {
+        deduplicateVideoFormats(uiModel.formats)
     }
 
-    var selectedFormat by remember(metadata) {
+    var selectedFormat by remember(uiModel) {
         mutableStateOf(
             deduplicatedVideoFormats.firstOrNull { it.height != null && it.height <= 1080 }
                 ?: deduplicatedVideoFormats.firstOrNull()
-                ?: metadata.formats.firstOrNull()
+                ?: uiModel.formats.firstOrNull()
         )
     }
 
     var selectedContainer by remember {
-        mutableStateOf(if (metadata.isImage) OutputContainer.JPG else OutputContainer.MP4)
+        mutableStateOf(if (uiModel.isImage) OutputContainer.JPG else OutputContainer.MP4)
     }
     var selectedAudioFormat by remember { mutableStateOf(AudioFormat.MP3) }
     var selectedAudioBitrate by remember { mutableStateOf(320) }
@@ -137,12 +136,12 @@ fun MediaAnalysisBottomSheet(
     var embedSubtitles by remember { mutableStateOf(false) }
     var embedThumbnail by remember { mutableStateOf(true) }
 
-    val selectedPlaylistItems = remember(metadata) {
-        mutableStateOf(metadata.playlistEntries.indices.toMutableSet())
+    val selectableIndices = remember(uiModel) {
+        uiModel.items.filter { it.isSuccess }.map { it.index }.toSet()
     }
 
-    val selectedCarouselItems = remember(metadata) {
-        mutableStateOf(metadata.carouselItems.indices.toMutableSet())
+    val selectedItems = remember(uiModel) {
+        mutableStateOf(selectableIndices.toMutableSet())
     }
 
     ModalBottomSheet(
@@ -168,10 +167,10 @@ fun MediaAnalysisBottomSheet(
                     MediaTypeBadge(mediaType = selectedMediaType)
                     Spacer(modifier = Modifier.width(8.dp))
                     val headerTitle = when {
-                        metadata.isCarousel -> "Carousel Detected (${metadata.carouselItems.size} items)"
-                        metadata.isPlaylist -> "Playlist Detected"
-                        metadata.isImage -> "Image Detected"
-                        metadata.mediaType == MediaType.AUDIO -> "Audio Stream"
+                        uiModel.isCarousel -> "Carousel Detected (${uiModel.items.size} items)"
+                        uiModel.isPlaylist -> "Playlist Detected"
+                        uiModel.isImage -> "Image Detected"
+                        uiModel.primaryMediaType == MediaType.AUDIO -> "Audio Stream"
                         else -> "Extracted Media"
                     }
                     Text(
@@ -203,20 +202,20 @@ fun MediaAnalysisBottomSheet(
                             .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
                             .background(Color(0xFF141218))
                     ) {
-                        val displayThumb = metadata.thumbnail.ifBlank {
-                            metadata.carouselItems.firstOrNull()?.thumbnail.orEmpty()
+                        val displayThumb = uiModel.thumbnail.ifBlank {
+                            uiModel.items.firstOrNull()?.thumbnail.orEmpty()
                         }
                         if (displayThumb.isNotBlank()) {
                             AsyncImage(
                                 model = displayThumb,
-                                contentDescription = metadata.title,
+                                contentDescription = uiModel.title,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.matchParentSize()
                             )
                         }
 
                         // Duration Badge
-                        if (metadata.durationSeconds > 0) {
+                        if (uiModel.durationSeconds > 0) {
                             Surface(
                                 color = Color.Black.copy(alpha = 0.8f),
                                 shape = RoundedCornerShape(6.dp),
@@ -225,7 +224,7 @@ fun MediaAnalysisBottomSheet(
                                     .padding(8.dp)
                             ) {
                                 Text(
-                                    text = metadata.durationFormatted,
+                                    text = uiModel.durationFormatted,
                                     color = Color.White,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -237,7 +236,7 @@ fun MediaAnalysisBottomSheet(
 
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = metadata.title,
+                            text = uiModel.title,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = ElegantTextPrimary,
@@ -246,7 +245,7 @@ fun MediaAnalysisBottomSheet(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "${metadata.uploader.ifBlank { "Media Creator" }} • ${if (metadata.viewCount != null) "${metadata.viewCount / 1000}K Views • " else ""}${metadata.uploadDate.ifBlank { "Recent" }}",
+                            text = "${uiModel.uploader.ifBlank { "Media Creator" }} • ${if (uiModel.viewCount != null) "${uiModel.viewCount / 1000}K Views • " else ""}${uiModel.uploadDate.ifBlank { "Recent" }}",
                             style = MaterialTheme.typography.bodySmall,
                             color = ElegantTextSecondary
                         )
@@ -268,8 +267,8 @@ fun MediaAnalysisBottomSheet(
                                     Text(text = "RESOLUTION", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = ElegantTextTertiary, letterSpacing = 1.sp)
                                     Spacer(modifier = Modifier.height(2.dp))
                                     val resText = when {
-                                        metadata.isImage -> if (metadata.width != null && metadata.height != null) "${metadata.width}x${metadata.height}" else "Original HD"
-                                        metadata.isCarousel -> "${metadata.carouselItems.size} Media Items"
+                                        uiModel.isImage -> uiModel.items.firstOrNull()?.dimensionsFormatted?.ifBlank { "Original HD" } ?: "Original HD"
+                                        uiModel.isCarousel -> "${uiModel.items.size} Media Items"
                                         else -> selectedFormat?.displayResolution ?: "Best HD"
                                     }
                                     Text(
@@ -328,8 +327,8 @@ fun MediaAnalysisBottomSheet(
                                     fontSize = 11.sp
                                 )
                                 val sizeText = when {
-                                    metadata.isImage -> metadata.displayFileSize
-                                    metadata.isCarousel -> "${metadata.carouselItems.size} items"
+                                    uiModel.isImage -> uiModel.displayFileSize
+                                    uiModel.isCarousel -> "${uiModel.items.size} items"
                                     else -> selectedFormat?.displayFileSize ?: "Auto Stream"
                                 }
                                 Text(
@@ -341,8 +340,8 @@ fun MediaAnalysisBottomSheet(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 val engineNote = when {
-                                    metadata.isImage -> "• Direct Fast Stream"
-                                    metadata.isCarousel -> "• Batch Downloader"
+                                    uiModel.isImage -> "• Direct Fast Stream"
+                                    uiModel.isCarousel -> "• Batch Downloader"
                                     else -> "• Universal Engine"
                                 }
                                 Text(
@@ -359,7 +358,7 @@ fun MediaAnalysisBottomSheet(
             Spacer(modifier = Modifier.height(16.dp))
 
             // Tab Selector only for standard Video / Audio / Playlist (Not single Image, Carousel, or pure Audio)
-            if (!metadata.isImage && !metadata.isCarousel && !metadata.isAudioOnly && metadata.mediaType != MediaType.AUDIO) {
+            if (!uiModel.isImage && !uiModel.isCarousel && uiModel.primaryMediaType != MediaType.AUDIO) {
                 SecondaryTabRow(
                     selectedTabIndex = when (selectedMediaType) {
                         MediaType.VIDEO -> 0
@@ -382,7 +381,7 @@ fun MediaAnalysisBottomSheet(
                         text = { Text("Audio Only", fontWeight = FontWeight.Bold) },
                         icon = { Icon(Icons.Default.Audiotrack, contentDescription = null, modifier = Modifier.size(18.dp)) }
                     )
-                    if (metadata.isPlaylist) {
+                    if (uiModel.isPlaylist) {
                         Tab(
                             selected = selectedMediaType == MediaType.PLAYLIST,
                             onClick = { selectedMediaType = MediaType.PLAYLIST },
@@ -429,20 +428,20 @@ fun MediaAnalysisBottomSheet(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Carousel Items (${selectedCarouselItems.value.size} of ${metadata.carouselItems.size} selected)",
+                            text = "Carousel Items (${selectedItems.value.size} of ${uiModel.items.size} selected)",
                             style = MaterialTheme.typography.labelLarge,
                             color = ElegantTextPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         TextButton(onClick = {
-                            if (selectedCarouselItems.value.size == metadata.carouselItems.size) {
-                                selectedCarouselItems.value = mutableSetOf()
+                            if (selectedItems.value.size == selectableIndices.size) {
+                                selectedItems.value = mutableSetOf()
                             } else {
-                                selectedCarouselItems.value = metadata.carouselItems.indices.toMutableSet()
+                                selectedItems.value = selectableIndices.toMutableSet()
                             }
                         }) {
                             Text(
-                                text = if (selectedCarouselItems.value.size == metadata.carouselItems.size) "Deselect All" else "Select All",
+                                text = if (selectedItems.value.size == selectableIndices.size) "Deselect All" else "Select All",
                                 color = ElegantLavenderPrimary,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -456,26 +455,28 @@ fun MediaAnalysisBottomSheet(
                             .fillMaxWidth()
                             .heightIn(max = 240.dp)
                     ) {
-                        itemsIndexed(metadata.carouselItems) { index, item ->
-                            val isSelected = selectedCarouselItems.value.contains(index)
+                        itemsIndexed(uiModel.items) { index, item ->
+                            val isSelected = selectedItems.value.contains(item.index)
+                            val isClickable = item.isSuccess
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val current = selectedCarouselItems.value.toMutableSet()
-                                        if (isSelected) current.remove(index) else current.add(index)
-                                        selectedCarouselItems.value = current
+                                    .clickable(enabled = isClickable) {
+                                        val current = selectedItems.value.toMutableSet()
+                                        if (isSelected) current.remove(item.index) else current.add(item.index)
+                                        selectedItems.value = current
                                     }
                                     .padding(vertical = 4.dp, horizontal = 6.dp)
                             ) {
                                 Checkbox(
                                     checked = isSelected,
+                                    enabled = isClickable,
                                     onCheckedChange = { checked ->
-                                        val current = selectedCarouselItems.value.toMutableSet()
-                                        if (checked) current.add(index) else current.remove(index)
-                                        selectedCarouselItems.value = current
+                                        val current = selectedItems.value.toMutableSet()
+                                        if (checked) current.add(item.index) else current.remove(item.index)
+                                        selectedItems.value = current
                                     },
                                     colors = CheckboxDefaults.colors(checkedColor = ElegantLavenderPrimary)
                                 )
@@ -497,14 +498,19 @@ fun MediaAnalysisBottomSheet(
                                         text = "${index + 1}. ${item.title}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
-                                        color = ElegantTextPrimary,
+                                        color = if (item.isSuccess) ElegantTextPrimary else ElegantTextTertiary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
+                                    val subText = if (item.isSuccess) {
+                                        "${item.mediaKind.name} • ${item.dimensionsFormatted.ifBlank { item.displayFileSize }}"
+                                    } else {
+                                        "Unavailable (${item.errorMessage ?: "Extraction failed"})"
+                                    }
                                     Text(
-                                        text = "${item.mediaType.name} • ${if (item.width != null && item.height != null) "${item.width}x${item.height}" else "Original"}",
+                                        text = subText,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = ElegantTextSecondary,
+                                        color = if (item.isSuccess) ElegantTextSecondary else MaterialTheme.colorScheme.error,
                                         fontSize = 10.sp
                                     )
                                 }
@@ -691,20 +697,20 @@ fun MediaAnalysisBottomSheet(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Playlist Items (${selectedPlaylistItems.value.size} of ${metadata.playlistEntries.size} selected)",
+                            text = "Playlist Items (${selectedItems.value.size} of ${uiModel.items.size} selected)",
                             style = MaterialTheme.typography.labelLarge,
                             color = ElegantTextPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         TextButton(onClick = {
-                            if (selectedPlaylistItems.value.size == metadata.playlistEntries.size) {
-                                selectedPlaylistItems.value = mutableSetOf()
+                            if (selectedItems.value.size == selectableIndices.size) {
+                                selectedItems.value = mutableSetOf()
                             } else {
-                                selectedPlaylistItems.value = metadata.playlistEntries.indices.toMutableSet()
+                                selectedItems.value = selectableIndices.toMutableSet()
                             }
                         }) {
                             Text(
-                                text = if (selectedPlaylistItems.value.size == metadata.playlistEntries.size) "Deselect All" else "Select All",
+                                text = if (selectedItems.value.size == selectableIndices.size) "Deselect All" else "Select All",
                                 color = ElegantLavenderPrimary,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -718,26 +724,28 @@ fun MediaAnalysisBottomSheet(
                             .fillMaxWidth()
                             .heightIn(max = 200.dp)
                     ) {
-                        itemsIndexed(metadata.playlistEntries) { index, entry ->
-                            val isSelected = selectedPlaylistItems.value.contains(index)
+                        itemsIndexed(uiModel.items) { index, entry ->
+                            val isSelected = selectedItems.value.contains(entry.index)
+                            val isClickable = entry.isSuccess
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val current = selectedPlaylistItems.value.toMutableSet()
-                                        if (isSelected) current.remove(index) else current.add(index)
-                                        selectedPlaylistItems.value = current
+                                    .clickable(enabled = isClickable) {
+                                        val current = selectedItems.value.toMutableSet()
+                                        if (isSelected) current.remove(entry.index) else current.add(entry.index)
+                                        selectedItems.value = current
                                     }
                                     .padding(vertical = 4.dp, horizontal = 6.dp)
                             ) {
                                 Checkbox(
                                     checked = isSelected,
+                                    enabled = isClickable,
                                     onCheckedChange = { checked ->
-                                        val current = selectedPlaylistItems.value.toMutableSet()
-                                        if (checked) current.add(index) else current.remove(index)
-                                        selectedPlaylistItems.value = current
+                                        val current = selectedItems.value.toMutableSet()
+                                        if (checked) current.add(entry.index) else current.remove(entry.index)
+                                        selectedItems.value = current
                                     },
                                     colors = CheckboxDefaults.colors(checkedColor = ElegantLavenderPrimary)
                                 )
@@ -759,15 +767,22 @@ fun MediaAnalysisBottomSheet(
                                         text = "${index + 1}. ${entry.title}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
-                                        color = ElegantTextPrimary,
+                                        color = if (entry.isSuccess) ElegantTextPrimary else ElegantTextTertiary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    if (entry.durationFormatted.isNotBlank()) {
+                                    if (entry.isSuccess && entry.durationFormatted.isNotBlank()) {
                                         Text(
                                             text = entry.durationFormatted,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = ElegantTextSecondary,
+                                            fontSize = 10.sp
+                                        )
+                                    } else if (!entry.isSuccess) {
+                                        Text(
+                                            text = "Unavailable (${entry.errorMessage ?: "Extraction failed"})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error,
                                             fontSize = 10.sp
                                         )
                                     }
@@ -778,7 +793,7 @@ fun MediaAnalysisBottomSheet(
                 }
             }
 
-            if (!metadata.isImage && !metadata.isCarousel) {
+            if (!uiModel.isImage && !uiModel.isCarousel) {
                 Spacer(modifier = Modifier.height(14.dp))
                 Divider(color = ElegantDarkBorder)
                 Spacer(modifier = Modifier.height(10.dp))
@@ -862,9 +877,9 @@ fun MediaAnalysisBottomSheet(
                 }
 
                 val downloadButtonLabel = when {
-                    metadata.isCarousel -> "DOWNLOAD ${selectedCarouselItems.value.size} ITEMS"
-                    metadata.isPlaylist -> "DOWNLOAD ${selectedPlaylistItems.value.size} ITEMS"
-                    metadata.isImage -> "DOWNLOAD IMAGE"
+                    uiModel.isCarousel -> "DOWNLOAD ${selectedItems.value.size} ITEMS"
+                    uiModel.isPlaylist -> "DOWNLOAD ${selectedItems.value.size} ITEMS"
+                    uiModel.isImage -> "DOWNLOAD IMAGE"
                     selectedMediaType == MediaType.AUDIO -> "DOWNLOAD AUDIO"
                     else -> "DOWNLOAD NOW"
                 }
@@ -873,9 +888,9 @@ fun MediaAnalysisBottomSheet(
                 Button(
                     onClick = {
                         val targetMediaType = when {
-                            metadata.isCarousel -> MediaType.CAROUSEL
-                            metadata.isPlaylist -> playlistTargetType
-                            metadata.isImage -> MediaType.IMAGE
+                            uiModel.isCarousel -> MediaType.CAROUSEL
+                            uiModel.isPlaylist -> playlistTargetType
+                            uiModel.isImage -> MediaType.IMAGE
                             else -> selectedMediaType
                         }
 
@@ -886,8 +901,7 @@ fun MediaAnalysisBottomSheet(
                         }
 
                         val selection = when {
-                            metadata.isCarousel -> selectedCarouselItems.value
-                            metadata.isPlaylist -> selectedPlaylistItems.value
+                            uiModel.isMultiItem -> selectedItems.value
                             else -> emptySet()
                         }
 
@@ -920,6 +934,30 @@ fun MediaAnalysisBottomSheet(
             }
         }
     }
+}
+
+@Composable
+fun MediaAnalysisBottomSheet(
+    metadata: MediaMetadata,
+    onDismiss: () -> Unit,
+    onDownload: (
+        format: FormatInfo?,
+        mediaType: MediaType,
+        container: OutputContainer,
+        audioBitrate: Int?,
+        embedSubs: Boolean,
+        embedThumb: Boolean,
+        selectedIndices: Set<Int>
+    ) -> Unit
+) {
+    val uiModel = remember(metadata) {
+        MediaUiMapper.mapMetadataToUiModel(metadata)
+    }
+    MediaAnalysisBottomSheet(
+        uiModel = uiModel,
+        onDismiss = onDismiss,
+        onDownload = onDownload
+    )
 }
 
 fun deduplicateVideoFormats(formats: List<FormatInfo>): List<FormatInfo> {

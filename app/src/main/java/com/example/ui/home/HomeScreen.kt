@@ -502,21 +502,24 @@ fun HomeScreen(viewModel: MainViewModel) {
 
     // Bottom Sheet for Media Analysis
     if (analysisState is AnalysisUiState.Success) {
-        val meta = (analysisState as AnalysisUiState.Success).metadata
+        val successState = analysisState as AnalysisUiState.Success
+        val uiModel = remember(successState.collection) {
+            MediaUiMapper.mapCollectionToUiModel(successState.collection)
+        }
         MediaAnalysisBottomSheet(
-            metadata = meta,
+            uiModel = uiModel,
             onDismiss = { viewModel.clearAnalysis() },
-            onDownload = { format, mediaType, container, bitrate, embedSubs, embedThumb, playlistSel ->
+            onDownload = { format, mediaType, container, bitrate, embedSubs, embedThumb, selectedIndices ->
                 val quality = format?.displayResolution ?: "Best"
-                viewModel.startDownload(
-                    metadata = meta,
+                viewModel.startDownloadWithCollection(
+                    collection = successState.collection,
                     selectedFormat = format,
                     mediaType = mediaType,
                     targetContainer = container,
                     audioBitrate = bitrate,
                     embedSubs = embedSubs,
                     embedThumbnail = embedThumb,
-                    selectedPlaylistIndices = playlistSel,
+                    selectedIndices = selectedIndices,
                     qualityLabel = quality
                 )
             }

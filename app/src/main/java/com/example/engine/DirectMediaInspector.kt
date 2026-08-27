@@ -1,6 +1,7 @@
 package com.example.engine
 
 import com.example.data.model.MediaType
+import com.example.engine.HttpCoroutineUtils.executeAsync
 import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -32,6 +33,89 @@ object DirectMediaInspector {
         val suggestedExt: String = "bin"
     )
 
+    /**
+     * Directly inspects URL and constructs a canonical MediaCollection with a single MediaItem.
+     */
+    suspend fun inspectMediaCollection(url: String): Result<com.example.data.model.MediaCollection> {
+        val inspection = inspectUrl(url)
+        if (!inspection.isDirectMedia) {
+            return Result.failure(Exception("Not a direct media resource"))
+        }
+
+        val cleanUrl = url.trim()
+        val titleFromUrl = cleanUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
+            .ifBlank { "media_${System.currentTimeMillis()}" }
+        val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
+        val kind = when (inspection.mediaType) {
+            MediaType.IMAGE -> com.example.data.model.MediaKind.IMAGE
+            MediaType.AUDIO -> com.example.data.model.MediaKind.AUDIO
+            else -> com.example.data.model.MediaKind.VIDEO
+        }
+
+        val sizeProvenance = if (inspection.contentLength != null && inspection.contentLength > 0) {
+            com.example.data.model.SizeProvenance.EXACT
+        } else {
+            com.example.data.model.SizeProvenance.UNKNOWN
+        }
+
+        val itemFormats = when (inspection.mediaType) {
+            MediaType.IMAGE -> emptyList()
+            MediaType.AUDIO -> listOf(
+                com.example.data.model.FormatInfo(
+                    formatId = "direct_audio",
+                    ext = inspection.suggestedExt,
+                    acodec = inspection.mimeType.substringAfter("audio/"),
+                    url = cleanUrl,
+                    filesize = inspection.contentLength,
+                    isAudioOnly = true
+                )
+            )
+            else -> listOf(
+                com.example.data.model.FormatInfo(
+                    formatId = "direct_video",
+                    ext = inspection.suggestedExt,
+                    vcodec = "h264",
+                    acodec = "aac",
+                    url = cleanUrl,
+                    filesize = inspection.contentLength,
+                    isMuxed = true
+                )
+            )
+        }
+
+        val singleItem = com.example.data.model.MediaItem(
+            id = "direct_" + java.util.UUID.randomUUID().toString().take(8),
+            title = cleanTitle,
+            sourceUrl = cleanUrl,
+            webpageUrl = cleanUrl,
+            thumbnail = if (inspection.mediaType == MediaType.IMAGE) cleanUrl else "",
+            mediaKind = kind,
+            width = inspection.width,
+            height = inspection.height,
+            mimeType = inspection.mimeType,
+            formats = itemFormats,
+            fileSize = inspection.contentLength,
+            sizeProvenance = sizeProvenance,
+            index = 0
+        )
+
+        val collection = com.example.data.model.MediaCollection(
+            id = singleItem.id,
+            title = cleanTitle,
+            webpageUrl = cleanUrl,
+            thumbnail = singleItem.thumbnail,
+            mediaKind = kind,
+            items = listOf(singleItem),
+            extractorName = when (inspection.mediaType) {
+                MediaType.IMAGE -> "DirectImage"
+                MediaType.AUDIO -> "DirectAudio"
+                else -> "DirectVideo"
+            }
+        )
+
+        return Result.success(collection)
+    }
+
     private fun isKnownSocialWebpage(url: String): Boolean {
         val lower = url.lowercase()
         val clean = lower.substringBefore("?").substringBefore("#")
@@ -52,24 +136,10 @@ object DirectMediaInspector {
     /**
      * Inspects a target URL to check whether it directly points to a media resource (Image, Video, Audio)
      * using HTTP HEAD and/or ranged GET request inspection with magic number validation.
-     * Supports coroutine cancellation.
      */
-    suspend fun inspectUrl(url: String, traceId: String? = null): InspectionResult {
-        val effectiveTraceId = traceId ?: MediaExtractionTracer.currentSessionFlow.value?.traceId
-        val opId = if (effectiveTraceId != null) {
-            MediaExtractionTracer.startOperation(
-                traceId = effectiveTraceId,
-                component = "DirectMediaInspector",
-                stage = "DIRECT_INSPECTION",
-                name = "inspectUrl",
-                details = mapOf("url" to url)
-            )
-        } else null
-
+    suspend fun inspectUrl(url: String): InspectionResult {
         if (url.isBlank()) {
-            val res = InspectionResult(false, MediaType.VIDEO, "unknown", null)
-            recordResult(effectiveTraceId, opId, res, "BLANK_URL", "URL is blank")
-            return res
+            return InspectionResult(false, MediaType.VIDEO, "unknown", null)
         }
 
         // Fast-path for explicit clean media extensions if network is not needed or as a hint
@@ -78,25 +148,11 @@ object DirectMediaInspector {
         // If it is a known social/video webpage that does not end in a direct media extension,
         // avoid blocking on slow HTTP HEAD/Range requests that are often rejected or rate-limited.
         if (isKnownSocialWebpage(url)) {
-            val res = InspectionResult(false, MediaType.VIDEO, "text/html", null)
-            recordResult(effectiveTraceId, opId, res, "KNOWN_SOCIAL_WEBPAGE", "Fast-path skipped HEAD request for social platform webpage")
-            return res
+            return InspectionResult(false, MediaType.VIDEO, "text/html", null)
         }
 
         try {
             // 1. Attempt HTTP HEAD request
-            if (effectiveTraceId != null) {
-                MediaExtractionTracer.logEvent(
-                    traceId = effectiveTraceId,
-                    opId = opId,
-                    component = "DirectMediaInspector",
-                    stage = "DIRECT_INSPECTION",
-                    event = "HTTP_HEAD_REQUEST_START",
-                    level = TraceLevel.DEBUG,
-                    input = url
-                )
-            }
-
             val headRequest = Request.Builder()
                 .url(url)
                 .head()
@@ -105,7 +161,7 @@ object DirectMediaInspector {
                 .build()
 
             val headResponse = try {
-                CancellableNetworkClient.executeCancellable(httpClient, headRequest)
+                httpClient.executeAsync(headRequest)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -117,55 +173,26 @@ object DirectMediaInspector {
                 val contentLength = headResponse.header("Content-Length")?.toLongOrNull()
                 headResponse.close()
 
-                if (effectiveTraceId != null) {
-                    MediaExtractionTracer.logEvent(
-                        traceId = effectiveTraceId,
-                        opId = opId,
-                        component = "DirectMediaInspector",
-                        stage = "DIRECT_INSPECTION",
-                        event = "HTTP_HEAD_RESPONSE",
-                        level = TraceLevel.DEBUG,
-                        output = "ContentType=$rawContentType ContentLength=$contentLength",
-                        details = mapOf("rawContentType" to rawContentType, "contentLength" to (contentLength?.toString() ?: "unknown"))
-                    )
-                }
-
                 val classified = classifyContentType(rawContentType, cleanUrl)
                 if (classified != null) {
-                    val res = InspectionResult(
+                    return InspectionResult(
                         isDirectMedia = true,
                         mediaType = classified.first,
                         mimeType = classified.second,
                         contentLength = contentLength,
                         suggestedExt = getExtensionForMime(classified.second, cleanUrl)
                     )
-                    recordResult(effectiveTraceId, opId, res, "HEAD_CONTENT_TYPE_MATCH", "Matched MIME type ${classified.second}")
-                    return res
                 }
 
                 // If content type is text/html or application/json, it's not direct media
                 if (rawContentType.contains("text/html") || rawContentType.contains("application/xhtml") || rawContentType.contains("application/json")) {
-                    val res = InspectionResult(false, MediaType.VIDEO, rawContentType, null)
-                    recordResult(effectiveTraceId, opId, res, "HTML_OR_JSON_CONTENT", "Response Content-Type indicates non-media container: $rawContentType")
-                    return res
+                    return InspectionResult(false, MediaType.VIDEO, rawContentType, null)
                 }
             } else {
                 headResponse?.close()
             }
 
             // 2. Fallback to GET with Range or small stream to read headers & initial magic bytes
-            if (effectiveTraceId != null) {
-                MediaExtractionTracer.logEvent(
-                    traceId = effectiveTraceId,
-                    opId = opId,
-                    component = "DirectMediaInspector",
-                    stage = "DIRECT_INSPECTION",
-                    event = "HTTP_RANGE_GET_START",
-                    level = TraceLevel.DEBUG,
-                    input = "Range: bytes=0-4095"
-                )
-            }
-
             val getRequest = Request.Builder()
                 .url(url)
                 .get()
@@ -175,7 +202,7 @@ object DirectMediaInspector {
                 .build()
 
             val getResponse = try {
-                CancellableNetworkClient.executeCancellable(httpClient, getRequest)
+                httpClient.executeAsync(getRequest)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -195,9 +222,7 @@ object DirectMediaInspector {
                     }
 
                     if (!resp.isSuccessful && resp.code != 206) {
-                        val fallback = inspectByExtensionOnly(cleanUrl)
-                        recordResult(effectiveTraceId, opId, fallback, "HTTP_ERROR_EXT_FALLBACK", "HTTP status ${resp.code}, fell back to extension")
-                        return fallback
+                        return inspectByExtensionOnly(cleanUrl)
                     }
 
                     // Read the first bytes for magic signature and dimension detection
@@ -213,7 +238,7 @@ object DirectMediaInspector {
                             if (magicClassified != null) {
                                 val (mediaType, mimeType) = magicClassified
                                 val (w, h) = if (mediaType == MediaType.IMAGE) extractImageDimensions(headerBytes, bytesRead, mimeType) else Pair(null, null)
-                                val res = InspectionResult(
+                                return InspectionResult(
                                     isDirectMedia = true,
                                     mediaType = mediaType,
                                     mimeType = mimeType,
@@ -222,8 +247,6 @@ object DirectMediaInspector {
                                     height = h,
                                     suggestedExt = getExtensionForMime(mimeType, cleanUrl)
                                 )
-                                recordResult(effectiveTraceId, opId, res, "MAGIC_BYTES_MATCH", "Identified magic bytes signature for $mimeType ($w x $h)")
-                                return res
                             }
                         }
                     }
@@ -231,61 +254,28 @@ object DirectMediaInspector {
                     // Check Content-Type header if magic bytes were inconclusive
                     val classified = classifyContentType(rawContentType, cleanUrl)
                     if (classified != null) {
-                        val res = InspectionResult(
+                        return InspectionResult(
                             isDirectMedia = true,
                             mediaType = classified.first,
                             mimeType = classified.second,
                             contentLength = contentLength,
                             suggestedExt = getExtensionForMime(classified.second, cleanUrl)
                         )
-                        recordResult(effectiveTraceId, opId, res, "GET_CONTENT_TYPE_MATCH", "Matched MIME type from range response: ${classified.second}")
-                        return res
                     }
 
                     // If text/html, it's definitely a webpage
                     if (rawContentType.contains("text/html") || rawContentType.contains("application/xhtml")) {
-                        val res = InspectionResult(false, MediaType.VIDEO, rawContentType, null)
-                        recordResult(effectiveTraceId, opId, res, "HTML_PAGE_CONTENT", "Range response content type is text/html")
-                        return res
+                        return InspectionResult(false, MediaType.VIDEO, rawContentType, null)
                     }
                 }
             }
 
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
             AppLogger.d("DirectMediaInspector", "Direct media inspection network check failed for $url: ${e.message}")
         }
 
         // Final fallback: extension inspection
-        val fallback = inspectByExtensionOnly(cleanUrl)
-        recordResult(effectiveTraceId, opId, fallback, "EXTENSION_ONLY_FALLBACK", "Network inspection inconclusive, evaluated extension only")
-        return fallback
-    }
-
-    private fun recordResult(traceId: String?, opId: String?, res: InspectionResult, decision: String, reason: String) {
-        if (traceId != null) {
-            val session = MediaExtractionTracer.getSession(traceId)
-            session?.directInspectionType = res.mediaType.name
-            session?.directInspectionMime = res.mimeType
-
-            if (opId != null) {
-                MediaExtractionTracer.endOperation(
-                    traceId = traceId,
-                    opId = opId,
-                    result = "isDirectMedia=${res.isDirectMedia} type=${res.mediaType} mime=${res.mimeType} length=${res.contentLength}",
-                    decision = decision,
-                    reason = reason,
-                    details = mapOf(
-                        "isDirectMedia" to res.isDirectMedia.toString(),
-                        "mediaType" to res.mediaType.name,
-                        "mimeType" to res.mimeType,
-                        "contentLength" to (res.contentLength?.toString() ?: "unknown"),
-                        "dimensions" to "${res.width ?: 0}x${res.height ?: 0}"
-                    )
-                )
-            }
-        }
+        return inspectByExtensionOnly(cleanUrl)
     }
 
     private fun inspectByExtensionOnly(cleanUrl: String): InspectionResult {

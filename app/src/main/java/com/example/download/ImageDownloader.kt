@@ -5,6 +5,8 @@ import com.example.data.model.MediaType
 import com.example.engine.AppLogger
 import com.example.engine.DirectMediaInspector
 import com.example.engine.FilenameFormatter
+import com.example.engine.HttpCoroutineUtils.executeAsync
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -61,7 +63,7 @@ object ImageDownloader {
                 .header("Accept", "image/*,*/*;q=0.8")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            val response = httpClient.executeAsync(request)
             if (!response.isSuccessful) {
                 val code = response.code
                 response.close()

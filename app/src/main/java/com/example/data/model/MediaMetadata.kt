@@ -70,7 +70,8 @@ data class CarouselItem(
     val durationSeconds: Long = 0,
     val mimeType: String? = null,
     val fileSize: Long? = null,
-    val isSelected: Boolean = true
+    val isSelected: Boolean = true,
+    val errorMessage: String? = null
 ) {
     val isImage: Boolean get() = mediaType == MediaType.IMAGE
     val isVideo: Boolean get() = mediaType == MediaType.VIDEO
@@ -155,6 +156,98 @@ sealed class ExtractedMedia {
                 webpageUrl = webpageUrl,
                 mediaType = MediaType.VIDEO,
                 description = message
+            )
+        }
+    }
+
+    fun toMediaCollection(): MediaCollection {
+        return when (this) {
+            is Image -> {
+                val singleItem = MediaItem(
+                    id = id,
+                    title = title,
+                    sourceUrl = directDownloadUrl,
+                    webpageUrl = webpageUrl,
+                    thumbnail = thumbnail,
+                    mediaKind = MediaKind.IMAGE,
+                    width = width,
+                    height = height,
+                    mimeType = mimeType,
+                    fileSize = fileSize,
+                    sizeProvenance = if (fileSize != null && fileSize > 0) SizeProvenance.EXACT else SizeProvenance.UNKNOWN,
+                    index = 0
+                )
+                MediaCollection(
+                    id = id,
+                    title = title,
+                    webpageUrl = webpageUrl,
+                    uploader = uploader,
+                    thumbnail = thumbnail,
+                    mediaKind = MediaKind.IMAGE,
+                    items = listOf(singleItem),
+                    extractorName = "DirectImage",
+                    description = description,
+                    uploadDate = uploadDate
+                )
+            }
+            is Carousel -> {
+                val mediaItems = items.mapIndexed { idx, item ->
+                    val kind = when (item.mediaType) {
+                        MediaType.IMAGE -> MediaKind.IMAGE
+                        MediaType.AUDIO -> MediaKind.AUDIO
+                        else -> MediaKind.VIDEO
+                    }
+                    val formats = if (kind == MediaKind.VIDEO) {
+                        listOf(
+                            FormatInfo(
+                                formatId = "carousel_video_$idx",
+                                ext = "mp4",
+                                url = item.sourceUrl,
+                                isMuxed = true
+                            )
+                        )
+                    } else emptyList()
+
+                    MediaItem(
+                        id = item.id,
+                        title = item.title,
+                        sourceUrl = item.sourceUrl,
+                        webpageUrl = webpageUrl,
+                        thumbnail = item.thumbnail.ifBlank { thumbnail },
+                        mediaKind = kind,
+                        durationSeconds = item.durationSeconds,
+                        width = item.width,
+                        height = item.height,
+                        mimeType = item.mimeType,
+                        formats = formats,
+                        fileSize = item.fileSize,
+                        sizeProvenance = if (item.fileSize != null && item.fileSize > 0) SizeProvenance.EXACT else SizeProvenance.UNKNOWN,
+                        isSelected = item.isSelected && item.errorMessage.isNullOrBlank(),
+                        index = idx,
+                        errorMessage = item.errorMessage
+                    )
+                }
+                MediaCollection(
+                    id = id,
+                    title = title,
+                    webpageUrl = webpageUrl,
+                    uploader = uploader,
+                    thumbnail = thumbnail.ifBlank { items.firstOrNull()?.thumbnail.orEmpty() },
+                    mediaKind = MediaKind.CAROUSEL,
+                    items = mediaItems,
+                    extractorName = "SocialCarousel"
+                )
+            }
+            is Video -> MediaCollection.fromMediaMetadata(metadata.copy(mediaType = MediaType.VIDEO))
+            is Audio -> MediaCollection.fromMediaMetadata(metadata.copy(mediaType = MediaType.AUDIO))
+            is Playlist -> MediaCollection.fromMediaMetadata(metadata.copy(mediaType = MediaType.PLAYLIST, isPlaylist = true))
+            is Unknown -> MediaCollection(
+                id = "unknown",
+                title = "Unknown Media",
+                webpageUrl = webpageUrl,
+                mediaKind = MediaKind.UNKNOWN,
+                description = message,
+                items = emptyList()
             )
         }
     }
