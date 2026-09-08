@@ -1,6 +1,7 @@
 package com.example.engine
 
 import android.content.Context
+import com.example.data.model.DownloadMode
 import com.example.data.model.ExtractedMedia
 import com.example.data.model.FormatInfo
 import com.example.data.model.MediaCollection
@@ -31,7 +32,8 @@ class MediaExtractionEngine(private val context: Context) {
         cookiesFile: File? = null,
         userAgent: String? = null,
         proxyUrl: String? = null,
-        geoBypass: Boolean = true
+        geoBypass: Boolean = true,
+        mode: DownloadMode = DownloadMode.AUTO
     ): Result<MediaCollection> = withContext(Dispatchers.IO) {
         val trimmedUrl = url.trim()
         if (trimmedUrl.isBlank()) {
@@ -39,17 +41,122 @@ class MediaExtractionEngine(private val context: Context) {
         }
 
         val canonicalUrl = UrlNormalizer.resolveCanonicalUrl(trimmedUrl)
-        AppLogger.i("MediaExtractionEngine", "Canonical analysis started")
+        AppLogger.i("MediaExtractionEngine", "Canonical analysis started ($mode) for: $canonicalUrl")
 
         try {
-            val overallResult = withTimeoutOrNull(50000L) {
-                runCanonicalExtractionPipeline(canonicalUrl, cookiesFile, userAgent, proxyUrl, geoBypass)
+            when (mode) {
+                DownloadMode.VIDEO -> {
+                    // Video Only / Quick yt-dlp:
+                    // Skip complex DOM/JSON page scraping and dump-single-json.
+                    // If direct video, inspect quickly. Otherwise return sensible defaults for yt-dlp download.
+                    val cleanNoQuery = canonicalUrl.substringBefore("?").lowercase()
+                    if (cleanNoQuery.endsWith(".mp4") || cleanNoQuery.endsWith(".mkv") ||
+                        cleanNoQuery.endsWith(".webm") || cleanNoQuery.endsWith(".mov")
+                    ) {
+                        val directResult = withTimeoutOrNull(3000L) {
+                            DirectMediaInspector.inspectMediaCollection(canonicalUrl)
+                        }
+                        if (directResult != null && directResult.isSuccess) {
+                            return@withContext directResult
+                        }
+                    }
+
+                    val titleFromUrl = canonicalUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
+                        .ifBlank { "video_${System.currentTimeMillis()}" }
+                    val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
+                    val defaultFormats = listOf(
+                        FormatInfo(
+                            formatId = "bestvideo+bestaudio/best",
+                            ext = "mp4",
+                            vcodec = "best",
+                            acodec = "best",
+                            url = canonicalUrl,
+                            displayResolution = "Best Video (Muxed)",
+                            isMuxed = true
+                        ),
+                        FormatInfo(
+                            formatId = "best",
+                            ext = "mp4",
+                            displayResolution = "Single Stream (Best)"
+                        ),
+                        FormatInfo(
+                            formatId = "bestvideo[height<=1080]+bestaudio/best",
+                            ext = "mp4",
+                            displayResolution = "1080p (Max)"
+                        ),
+                        FormatInfo(
+                            formatId = "bestvideo[height<=720]+bestaudio/best",
+                            ext = "mp4",
+                            displayResolution = "720p (HD)"
+                        )
+                    )
+                    val videoItem = MediaItem(
+                        id = "video_" + UUID.randomUUID().toString().take(8),
+                        title = cleanTitle,
+                        sourceUrl = canonicalUrl,
+                        webpageUrl = canonicalUrl,
+                        thumbnail = "",
+                        mediaKind = MediaKind.VIDEO,
+                        formats = defaultFormats,
+                        index = 0
+                    )
+                    val quickCollection = MediaCollection(
+                        id = videoItem.id,
+                        title = cleanTitle,
+                        webpageUrl = canonicalUrl,
+                        thumbnail = "",
+                        mediaKind = MediaKind.VIDEO,
+                        items = listOf(videoItem),
+                        extractorName = "QuickYtDlpVideo"
+                    )
+                    AppLogger.i("MediaExtractionEngine", "VIDEO mode: Returning fast yt-dlp video configuration")
+                    return@withContext Result.success(quickCollection)
+                }
+
+                DownloadMode.IMAGE -> {
+                    // Images Only / Direct Stream:
+                    // Completely bypass Python / yt-dlp.
+                    // Inspect directly via DirectMediaInspector and PageMetadataExtractor.
+                    AppLogger.i("MediaExtractionEngine", "IMAGE mode: Running direct & page inspection, bypassing yt-dlp")
+                    val directResult = withTimeoutOrNull(4000L) {
+                        DirectMediaInspector.inspectMediaCollection(canonicalUrl)
+                    }
+                    if (directResult != null && directResult.isSuccess) {
+                        val col = directResult.getOrThrow()
+                        if (col.mediaKind == MediaKind.IMAGE) {
+                            return@withContext Result.success(col)
+                        }
+                    }
+
+                    val pageMedia = withTimeoutOrNull(5000L) {
+                        PageMetadataExtractor.extractPageMedia(canonicalUrl)
+                            ?: PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
+                    }
+                    if (pageMedia != null) {
+                        val col = pageMedia.toMediaCollection()
+                        val sanitizedItems = col.items.map { it.copy(mediaKind = MediaKind.IMAGE, isSelected = true) }
+                        return@withContext Result.success(
+                            col.copy(
+                                mediaKind = if (sanitizedItems.size > 1) MediaKind.CAROUSEL else MediaKind.IMAGE,
+                                items = sanitizedItems
+                            )
+                        )
+                    }
+
+                    return@withContext Result.failure(Exception("No image or photo carousel found at this URL."))
+                }
+
+                DownloadMode.AUTO -> {
+                    val overallResult = withTimeoutOrNull(50000L) {
+                        runCanonicalExtractionPipeline(canonicalUrl, cookiesFile, userAgent, proxyUrl, geoBypass)
+                    }
+                    if (overallResult != null) {
+                        return@withContext overallResult
+                    }
+                    AppLogger.e("MediaExtractionEngine", "Analysis failed: Global analysis timeout exceeded (50s)")
+                    Result.failure(Exception("Media analysis timed out after 50 seconds. The host or media server did not respond in time."))
+                }
             }
-            if (overallResult != null) {
-                return@withContext overallResult
-            }
-            AppLogger.e("MediaExtractionEngine", "Analysis failed: Global analysis timeout exceeded (50s)")
-            Result.failure(Exception("Media analysis timed out after 50 seconds. The host or media server did not respond in time."))
         } catch (e: CancellationException) {
             AppLogger.i("MediaExtractionEngine", "Analysis cancelled")
             throw e
@@ -196,7 +303,17 @@ class MediaExtractionEngine(private val context: Context) {
         AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError. Triggering image/DOM fallback.")
 
         // Stage 4: Comprehensive DOM/JSON-LD, OpenGraph, and Responsive Image Fallback
-        val fallbackMedia = pageMedia ?: try {
+        val socialFallback = try {
+            withTimeoutOrNull(6000L) {
+                PageMetadataExtractor.extractSocialVideoOrImageFallback(canonicalUrl)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+
+        val fallbackMedia = socialFallback ?: pageMedia ?: try {
             withTimeoutOrNull(6000L) {
                 PageMetadataExtractor.extractPageMedia(canonicalUrl)
                     ?: PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)

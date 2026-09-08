@@ -9,6 +9,7 @@ import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
 import com.example.data.model.MediaType
 import com.example.engine.AppLogger
+import com.example.engine.DirectMediaInspector
 import com.example.engine.YtDlpEngine
 import com.example.engine.YtDlpProcessRunner
 import kotlinx.coroutines.CoroutineScope
@@ -197,13 +198,18 @@ class DownloadManager(
                 downloadDao.updateTaskStatus(task.id, DownloadStatus.DOWNLOADING)
                 AppLogger.i("DownloadManager", "Started active download: ${task.title} (Attempt: ${task.retryAttempt + 1})", task.id)
 
-                val result = if (task.mediaType == MediaType.IMAGE) {
+                val isDirectStream = task.mediaType == MediaType.IMAGE ||
+                        task.formatId.startsWith("direct_") ||
+                        DirectMediaInspector.isDirectMediaUrl(task.url)
+
+                val result = if (isDirectStream) {
                     ImageDownloader.downloadImage(
                         context = context,
                         imageUrl = task.url,
                         suggestedTitle = task.title,
                         customExt = task.targetContainer.ifBlank { null },
                         safTreeUri = _settingsFlow.value.downloadLocationUri.ifBlank { null },
+                        mediaType = task.mediaType,
                         isCancelled = { cancelledFlags[task.id] == true },
                         isPaused = { pausedFlags[task.id] == true },
                         onProgress = { progress, downloaded, total, speed, eta ->
@@ -238,7 +244,7 @@ class DownloadManager(
                             }
                         },
                         onLog = { msg ->
-                            AppLogger.d("DownloadManager", "[Image] $msg", task.id)
+                            AppLogger.d("DownloadManager", "[DirectStream] $msg", task.id)
                         }
                     ).map { it.finalPathOrSafUri }
                 } else {

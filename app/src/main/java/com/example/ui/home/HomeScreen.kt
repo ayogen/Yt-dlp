@@ -26,14 +26,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -73,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.DownloadHistoryEntity
+import com.example.data.model.DownloadMode
 import com.example.data.model.FormatInfo
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
@@ -98,6 +102,7 @@ fun HomeScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     var urlInput by remember { mutableStateOf("") }
     val analysisState by viewModel.analysisState.collectAsState()
+    val selectedDownloadMode by viewModel.downloadMode.collectAsState()
     val historyList by viewModel.filteredHistory.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val detectedClipboardUrl by viewModel.detectedClipboardUrl.collectAsState()
@@ -160,7 +165,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                             onClick = {
                                 urlInput = clipUrl
                                 viewModel.dismissDetectedClipboardUrl()
-                                viewModel.analyzeUrl(clipUrl)
+                                viewModel.analyzeUrl(clipUrl, selectedDownloadMode)
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = ElegantLavenderPrimary,
@@ -329,6 +334,66 @@ fun HomeScreen(viewModel: MainViewModel) {
                         .testTag("url_input_field")
                 )
 
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Download Mode Selector Chips
+                Text(
+                    text = "Extraction Mode",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ElegantTextSecondary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DownloadMode.values().forEach { mode ->
+                        val isSelected = selectedDownloadMode == mode
+                        val chipIcon = when (mode) {
+                            DownloadMode.AUTO -> Icons.Default.AutoAwesome
+                            DownloadMode.VIDEO -> Icons.Default.Videocam
+                            DownloadMode.IMAGE -> Icons.Default.Image
+                        }
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { viewModel.setDownloadMode(mode) },
+                            label = {
+                                Text(
+                                    text = mode.label,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = chipIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = if (isSelected) ElegantLavenderPrimary else ElegantTextTertiary
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ElegantLavenderPrimary.copy(alpha = 0.18f),
+                                selectedLabelColor = ElegantLavenderPrimary,
+                                containerColor = ElegantDarkSurfaceVariant,
+                                labelColor = ElegantTextSecondary
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(
+                                borderColor = if (isSelected) ElegantLavenderPrimary else ElegantDarkBorder,
+                                selectedBorderColor = ElegantLavenderPrimary,
+                                borderWidth = 1.dp,
+                                selectedBorderWidth = 1.5.dp,
+                                enabled = true,
+                                selected = isSelected
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("mode_chip_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Analyze Action Button
@@ -356,7 +421,12 @@ fun HomeScreen(viewModel: MainViewModel) {
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(text = "Analyzing...", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            val analyzingText = when (selectedDownloadMode) {
+                                DownloadMode.VIDEO -> "Extracting Video..."
+                                DownloadMode.IMAGE -> "Fetching Images..."
+                                DownloadMode.AUTO -> "Analyzing Media..."
+                            }
+                            Text(text = analyzingText, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
 
                         OutlinedButton(
@@ -376,10 +446,16 @@ fun HomeScreen(viewModel: MainViewModel) {
                         }
                     }
                 } else {
+                    val (actionText, actionIcon) = when (selectedDownloadMode) {
+                        DownloadMode.VIDEO -> "Quick Video Download" to Icons.Default.Videocam
+                        DownloadMode.IMAGE -> "Fetch Images (Direct)" to Icons.Default.Image
+                        DownloadMode.AUTO -> "Analyze Media" to Icons.Default.Search
+                    }
+
                     Button(
                         onClick = {
                             if (urlInput.isNotBlank()) {
-                                viewModel.analyzeUrl(urlInput)
+                                viewModel.analyzeUrl(urlInput.trim(), selectedDownloadMode)
                             }
                         },
                         enabled = urlInput.isNotBlank(),
@@ -395,9 +471,9 @@ fun HomeScreen(viewModel: MainViewModel) {
                             .height(50.dp)
                             .testTag("analyze_button")
                     ) {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = null)
+                        Icon(imageVector = actionIcon, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Analyze Media", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(text = actionText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
             }

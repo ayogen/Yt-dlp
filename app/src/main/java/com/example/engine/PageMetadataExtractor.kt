@@ -2,6 +2,7 @@ package com.example.engine
 
 import com.example.data.model.CarouselItem
 import com.example.data.model.ExtractedMedia
+import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.engine.HttpCoroutineUtils.executeAsync
 import com.example.engine.HttpCoroutineUtils.fetchStringAsync
@@ -732,6 +733,71 @@ object PageMetadataExtractor {
                     return decodeHtmlEntities(value)
                 }
             }
+        }
+        return null
+    }
+
+    /**
+     * Dedicated fallback for social media platforms (Instagram, Facebook, Twitter, etc.)
+     * when yt-dlp fails or times out. Extracts og:video or og:image from the HTML
+     * so that the UI never stays stuck on 'Analyzing...'.
+     */
+    suspend fun extractSocialVideoOrImageFallback(url: String): ExtractedMedia? {
+        val cleanUrl = url.trim()
+        try {
+            val html = fetchHtml(cleanUrl, userAgent = CRAWLER_USER_AGENT)
+                ?: fetchHtml(cleanUrl, userAgent = BROWSER_USER_AGENT)
+                ?: return null
+
+            val ogVideo = extractMetaTag(html, "og:video:secure_url")
+                ?: extractMetaTag(html, "og:video")
+                ?: extractMetaTag(html, "og:video:url")
+                ?: extractMetaTag(html, "twitter:player:stream")
+
+            val title = extractMetaTag(html, "og:title")
+                ?: extractMetaTag(html, "twitter:title")
+                ?: extractTitle(html)
+                ?: "Social Media"
+            val description = extractMetaTag(html, "og:description") ?: extractMetaTag(html, "twitter:description").orEmpty()
+            val ogImage = extractMetaTag(html, "og:image:secure_url")
+                ?: extractMetaTag(html, "og:image")
+                ?: extractMetaTag(html, "twitter:image")
+                ?: ""
+
+            if (!ogVideo.isNullOrBlank() && !ogVideo.contains(".html")) {
+                val decodedVideo = decodeHtmlEntities(ogVideo)
+                val meta = MediaMetadata(
+                    id = "og_vid_" + UUID.randomUUID().toString().take(8),
+                    title = cleanText(title),
+                    webpageUrl = cleanUrl,
+                    uploader = extractMetaTag(html, "og:site_name") ?: "Social Media",
+                    thumbnail = decodeHtmlEntities(ogImage),
+                    directDownloadUrl = decodedVideo,
+                    mediaType = MediaType.VIDEO,
+                    mimeType = "video/mp4",
+                    extractorName = "OpenGraphVideoFallback"
+                )
+                AppLogger.i("PageMetadataExtractor", "RETURN Video fallback via OpenGraph: $decodedVideo")
+                return ExtractedMedia.Video(meta)
+            }
+
+            if (!ogImage.isNullOrBlank() && !ogImage.contains("icon") && !ogImage.contains("null")) {
+                AppLogger.i("PageMetadataExtractor", "RETURN Image fallback via OpenGraph: $ogImage")
+                return ExtractedMedia.Image(
+                    id = "og_img_" + UUID.randomUUID().toString().take(8),
+                    title = cleanText(title),
+                    webpageUrl = cleanUrl,
+                    directDownloadUrl = decodeHtmlEntities(ogImage),
+                    thumbnail = decodeHtmlEntities(ogImage),
+                    mimeType = "image/jpeg",
+                    uploader = extractMetaTag(html, "og:site_name") ?: "Social Media",
+                    description = cleanText(description)
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLogger.d("PageMetadataExtractor", "Social video/image fallback failed: ${e.message}")
         }
         return null
     }

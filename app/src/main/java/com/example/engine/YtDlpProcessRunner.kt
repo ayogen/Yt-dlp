@@ -7,12 +7,17 @@ import com.example.data.model.PlaylistEntry
 import com.example.data.model.SubtitleTrack
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 
 object YtDlpProcessRunner {
+    const val CHROME_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+
     fun cancelTaskProcess(taskId: String) {
         try {
             YoutubeDL.getInstance().destroyProcessById(taskId)
@@ -36,6 +41,11 @@ object YtDlpProcessRunner {
             request.addOption("--flat-playlist")
             request.addOption("--socket-timeout", "15")
 
+            val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
+            if (!hasCustomUserAgent) {
+                request.addOption("--user-agent", CHROME_USER_AGENT)
+            }
+
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
                 request.addOption("--cookies", cookiesPath)
             }
@@ -55,7 +65,18 @@ object YtDlpProcessRunner {
             }
 
             AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url")
-            val response = YoutubeDL.getInstance().execute(request, processId)
+            val response = withTimeoutOrNull(20_000L) {
+                YoutubeDL.getInstance().execute(request, processId)
+            }
+
+            if (response == null) {
+                try {
+                    YoutubeDL.getInstance().destroyProcessById(processId)
+                } catch (_: Exception) {}
+                AppLogger.w("YtDlpProcessRunner", "Metadata extraction timed out after 20s for $url")
+                return@withContext Result.failure(Exception("Metadata extraction timed out after 20s"))
+            }
+
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
@@ -74,13 +95,22 @@ object YtDlpProcessRunner {
 
             Result.success(metadata)
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) {
-                try {
-                    YoutubeDL.getInstance().destroyProcessById(processId)
-                } catch (_: Exception) {}
+            try {
+                YoutubeDL.getInstance().destroyProcessById(processId)
+            } catch (_: Exception) {}
+            if (e is CancellationException) {
                 throw e
             }
             val msg = e.message ?: e.javaClass.simpleName
+            val isAntiBot = msg.contains("Sign in to confirm", ignoreCase = true) ||
+                    msg.contains("rate-limit", ignoreCase = true) ||
+                    msg.contains("429", ignoreCase = true) ||
+                    msg.contains("Login required", ignoreCase = true) ||
+                    msg.contains("bot", ignoreCase = true)
+            if (isAntiBot) {
+                AppLogger.w("YtDlpProcessRunner", "Anti-bot challenge or rate-limit detected for $url: $msg")
+                return@withContext Result.failure(Exception("Anti-bot or rate-limit detected: $msg"))
+            }
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)
         }
@@ -99,6 +129,11 @@ object YtDlpProcessRunner {
             request.addOption("--no-warnings")
             request.addOption("--flat-playlist")
             request.addOption("--socket-timeout", "15")
+
+            val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
+            if (!hasCustomUserAgent) {
+                request.addOption("--user-agent", CHROME_USER_AGENT)
+            }
 
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
                 request.addOption("--cookies", cookiesPath)
@@ -119,7 +154,18 @@ object YtDlpProcessRunner {
             }
 
             AppLogger.d("YtDlpProcessRunner", "Executing metadata request for $url (canonical collection)")
-            val response = YoutubeDL.getInstance().execute(request, processId)
+            val response = withTimeoutOrNull(20_000L) {
+                YoutubeDL.getInstance().execute(request, processId)
+            }
+
+            if (response == null) {
+                try {
+                    YoutubeDL.getInstance().destroyProcessById(processId)
+                } catch (_: Exception) {}
+                AppLogger.w("YtDlpProcessRunner", "Media collection extraction timed out after 20s for $url")
+                return@withContext Result.failure(Exception("Media collection extraction timed out after 20s"))
+            }
+
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
@@ -138,13 +184,22 @@ object YtDlpProcessRunner {
 
             Result.success(collection)
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) {
-                try {
-                    YoutubeDL.getInstance().destroyProcessById(processId)
-                } catch (_: Exception) {}
+            try {
+                YoutubeDL.getInstance().destroyProcessById(processId)
+            } catch (_: Exception) {}
+            if (e is CancellationException) {
                 throw e
             }
             val msg = e.message ?: e.javaClass.simpleName
+            val isAntiBot = msg.contains("Sign in to confirm", ignoreCase = true) ||
+                    msg.contains("rate-limit", ignoreCase = true) ||
+                    msg.contains("429", ignoreCase = true) ||
+                    msg.contains("Login required", ignoreCase = true) ||
+                    msg.contains("bot", ignoreCase = true)
+            if (isAntiBot) {
+                AppLogger.w("YtDlpProcessRunner", "Anti-bot challenge or rate-limit detected for $url: $msg")
+                return@withContext Result.failure(Exception("Anti-bot or rate-limit detected: $msg"))
+            }
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)
         }
@@ -163,6 +218,11 @@ object YtDlpProcessRunner {
             request.addOption("--no-warnings")
             request.addOption("--flat-playlist")
             request.addOption("--socket-timeout", "15")
+
+            val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
+            if (!hasCustomUserAgent) {
+                request.addOption("--user-agent", CHROME_USER_AGENT)
+            }
 
             if (!cookiesPath.isNullOrBlank() && File(cookiesPath).exists()) {
                 request.addOption("--cookies", cookiesPath)
@@ -183,7 +243,18 @@ object YtDlpProcessRunner {
             }
 
             AppLogger.d("YtDlpProcessRunner", "Executing DTO request for $url")
-            val response = YoutubeDL.getInstance().execute(request, processId)
+            val response = withTimeoutOrNull(20_000L) {
+                YoutubeDL.getInstance().execute(request, processId)
+            }
+
+            if (response == null) {
+                try {
+                    YoutubeDL.getInstance().destroyProcessById(processId)
+                } catch (_: Exception) {}
+                AppLogger.w("YtDlpProcessRunner", "DTO extraction timed out after 20s for $url")
+                return@withContext Result.failure(Exception("DTO extraction timed out after 20s"))
+            }
+
             val stdout = response.out
 
             if (stdout.isNullOrBlank()) {
@@ -195,13 +266,22 @@ object YtDlpProcessRunner {
             val infoDto = com.example.extraction.YtDlpJsonParser.parse(json, url)
             Result.success(infoDto)
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) {
-                try {
-                    YoutubeDL.getInstance().destroyProcessById(processId)
-                } catch (_: Exception) {}
+            try {
+                YoutubeDL.getInstance().destroyProcessById(processId)
+            } catch (_: Exception) {}
+            if (e is CancellationException) {
                 throw e
             }
             val msg = e.message ?: e.javaClass.simpleName
+            val isAntiBot = msg.contains("Sign in to confirm", ignoreCase = true) ||
+                    msg.contains("rate-limit", ignoreCase = true) ||
+                    msg.contains("429", ignoreCase = true) ||
+                    msg.contains("Login required", ignoreCase = true) ||
+                    msg.contains("bot", ignoreCase = true)
+            if (isAntiBot) {
+                AppLogger.w("YtDlpProcessRunner", "Anti-bot challenge or rate-limit detected for $url: $msg")
+                return@withContext Result.failure(Exception("Anti-bot or rate-limit detected: $msg"))
+            }
             AppLogger.e("YtDlpProcessRunner", "CLI Execution error: $msg")
             Result.failure(e)
         }
@@ -228,6 +308,9 @@ object YtDlpProcessRunner {
             val request = YoutubeDLRequest(url)
             request.addOption("--newline")
             request.addOption("--no-playlist")
+            request.addOption("--concurrent-fragments", "4")
+            request.addOption("--buffersize", "64K")
+            request.addOption("--http-chunk-size", "10M")
 
             // Audio extraction vs Video muxing configuration
             if (mediaType == MediaType.AUDIO) {
@@ -286,6 +369,11 @@ object YtDlpProcessRunner {
                         i++
                     }
                 }
+            }
+
+            val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
+            if (!hasCustomUserAgent) {
+                request.addOption("--user-agent", CHROME_USER_AGENT)
             }
 
             AppLogger.i("YtDlpProcessRunner", "Starting yt-dlp download for $url", taskId)

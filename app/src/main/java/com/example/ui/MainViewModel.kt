@@ -16,6 +16,7 @@ import com.example.data.ProfileManager
 import com.example.data.model.AppSettings
 import com.example.data.model.DiagnosticReport
 import com.example.data.model.DownloadHistoryEntity
+import com.example.data.model.DownloadMode
 import com.example.data.model.DownloadProfile
 import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTaskEntity
@@ -78,6 +79,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _analysisState = MutableStateFlow<AnalysisUiState>(AnalysisUiState.Idle)
     val analysisState: StateFlow<AnalysisUiState> = _analysisState.asStateFlow()
+
+    private val _downloadMode = MutableStateFlow(DownloadMode.AUTO)
+    val downloadMode: StateFlow<DownloadMode> = _downloadMode.asStateFlow()
+
+    fun setDownloadMode(mode: DownloadMode) {
+        _downloadMode.value = mode
+    }
 
     private val _historySearchQuery = MutableStateFlow("")
     val historySearchQuery: StateFlow<String> = _historySearchQuery.asStateFlow()
@@ -497,7 +505,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun analyzeUrl(url: String) {
+    fun analyzeUrl(url: String, mode: DownloadMode = _downloadMode.value) {
         if (url.isBlank()) {
             _toastMessage.value = "Please enter a valid URL"
             return
@@ -506,9 +514,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         analysisJob?.cancel()
         analysisJob = viewModelScope.launch {
             _analysisState.value = AnalysisUiState.Analyzing
-            AppLogger.i("MainViewModel", "Analyzing: $url")
+            AppLogger.i("MainViewModel", "Analyzing ($mode): $url")
             try {
-                val result = repository.analyzeMediaCollection(url)
+                val result = repository.analyzeMediaCollection(url, mode)
                 if (result.isSuccess) {
                     _analysisState.value = AnalysisUiState.Success(result.getOrThrow())
                 } else {

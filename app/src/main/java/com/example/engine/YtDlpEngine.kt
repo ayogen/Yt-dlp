@@ -21,12 +21,18 @@ class YtDlpEngine(private val context: Context) {
 
     private val extractionEngine = MediaExtractionEngine(context)
 
-    suspend fun analyzeMediaCollection(url: String, settings: AppSettings): Result<com.example.data.model.MediaCollection> = withContext(Dispatchers.IO) {
+    suspend fun analyzeMediaCollection(
+        url: String,
+        settings: AppSettings,
+        mode: com.example.data.model.DownloadMode = com.example.data.model.DownloadMode.AUTO
+    ): Result<com.example.data.model.MediaCollection> = withContext(Dispatchers.IO) {
         val resolvedUrl = UrlNormalizer.resolveCanonicalUrl(url)
-        AppLogger.i("YtDlpEngine", "Starting canonical media analysis for: $resolvedUrl (original: $url)")
+        AppLogger.i("YtDlpEngine", "Starting canonical media analysis ($mode) for: $resolvedUrl (original: $url)")
 
-        // Ensure yt-dlp runtime is initialized in background
-        YtDlpBinaryManager.ensureInitialized(context)
+        // Ensure yt-dlp runtime is initialized in background unless IMAGE only mode
+        if (mode != com.example.data.model.DownloadMode.IMAGE) {
+            YtDlpBinaryManager.ensureInitialized(context)
+        }
 
         val cookiesFile = if (settings.cookiesFilePath.isNotBlank()) File(settings.cookiesFilePath) else null
 
@@ -35,7 +41,8 @@ class YtDlpEngine(private val context: Context) {
             cookiesFile = cookiesFile,
             userAgent = null,
             proxyUrl = null,
-            geoBypass = true
+            geoBypass = true,
+            mode = mode
         )
     }
 

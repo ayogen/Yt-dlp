@@ -28,7 +28,7 @@ object ImageDownloader {
     }
 
     private const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
 
     data class ImageDownloadResult(
         val finalPathOrSafUri: String,
@@ -71,7 +71,7 @@ object ImageDownloader {
     }
 
     /**
-     * Downloads an image directly via HTTP streaming without loading the entire image into RAM.
+     * Downloads an image or direct media stream directly via HTTP streaming without loading into RAM.
      * Provides realtime progress callbacks, non-busy pause/cancellation handling, and atomic export to SAF.
      */
     suspend fun downloadImage(
@@ -81,6 +81,7 @@ object ImageDownloader {
         customExt: String? = null,
         safTreeUri: String? = null,
         pageUrl: String? = null,
+        mediaType: MediaType = MediaType.IMAGE,
         isCancelled: () -> Boolean = { false },
         isPaused: () -> Boolean = { false },
         onProgress: (progress: Float, downloaded: Long, total: Long, speed: Double, eta: Long) -> Unit = { _, _, _, _, _ -> },
@@ -89,7 +90,7 @@ object ImageDownloader {
         var tempFile: File? = null
         var isPausedInterrupted = false
         try {
-            onLog("Initiating image download from: $imageUrl")
+            onLog("Initiating stream download from: $imageUrl ($mediaType)")
 
             if (isCancelled()) {
                 onLog("Download cancelled before start.")
@@ -101,10 +102,10 @@ object ImageDownloader {
                 return@withContext Result.failure(Exception("Download paused"))
             }
 
-            val sanitizedTitle = FilenameFormatter.sanitize(suggestedTitle.ifBlank { "image_${System.currentTimeMillis()}" })
+            val sanitizedTitle = FilenameFormatter.sanitize(suggestedTitle.ifBlank { "media_${System.currentTimeMillis()}" })
             val stagingDir = File(context.cacheDir, "staging_downloads").apply { if (!exists()) mkdirs() }
             val urlHash = imageUrl.hashCode().toUInt().toString(16)
-            tempFile = File(stagingDir, "img_${urlHash}_${sanitizedTitle.take(24)}.tmp")
+            tempFile = File(stagingDir, "stream_${urlHash}_${sanitizedTitle.take(24)}.tmp")
 
             val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
 
@@ -114,9 +115,9 @@ object ImageDownloader {
                 .get()
                 .header("User-Agent", USER_AGENT)
                 .header("Referer", referer)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,video/*,audio/*,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Sec-Fetch-Dest", "image")
+                .header("Sec-Fetch-Dest", if (mediaType == MediaType.IMAGE) "image" else "video")
                 .header("Sec-Fetch-Mode", "no-cors")
                 .header("Sec-Fetch-Site", "cross-site")
 
@@ -129,7 +130,7 @@ object ImageDownloader {
             if (!response.isSuccessful) {
                 val code = response.code
                 response.close()
-                return@withContext Result.failure(Exception("HTTP $code: Failed to download image stream from $imageUrl"))
+                return@withContext Result.failure(Exception("HTTP $code: Failed to download media stream from $imageUrl"))
             }
 
             val body = response.body ?: run {
@@ -158,19 +159,37 @@ object ImageDownloader {
                 rawContentType.contains("avif") -> "avif"
                 rawContentType.contains("bmp") -> "bmp"
                 rawContentType.contains("heic") -> "heic"
+                rawContentType.contains("mp4") -> "mp4"
+                rawContentType.contains("webm") -> "webm"
+                rawContentType.contains("matroska") || rawContentType.contains("mkv") -> "mkv"
+                rawContentType.contains("mpeg") || rawContentType.contains("mp3") -> "mp3"
+                rawContentType.contains("m4a") || rawContentType.contains("aac") -> "m4a"
+                rawContentType.contains("flac") -> "flac"
+                rawContentType.contains("ogg") || rawContentType.contains("opus") -> "opus"
+                rawContentType.contains("wav") -> "wav"
+                imageUrl.contains(".mp4", ignoreCase = true) -> "mp4"
+                imageUrl.contains(".webm", ignoreCase = true) -> "webm"
+                imageUrl.contains(".mkv", ignoreCase = true) -> "mkv"
+                imageUrl.contains(".mp3", ignoreCase = true) -> "mp3"
+                imageUrl.contains(".m4a", ignoreCase = true) -> "m4a"
+                imageUrl.contains(".flac", ignoreCase = true) -> "flac"
+                imageUrl.contains(".opus", ignoreCase = true) -> "opus"
+                imageUrl.contains(".wav", ignoreCase = true) -> "wav"
                 imageUrl.contains(".png", ignoreCase = true) -> "png"
                 imageUrl.contains(".webp", ignoreCase = true) -> "webp"
                 imageUrl.contains(".gif", ignoreCase = true) -> "gif"
+                mediaType == MediaType.AUDIO -> "mp3"
+                mediaType == MediaType.VIDEO -> "mp4"
                 else -> "jpg"
             }
 
             val finalFilename = "$sanitizedTitle.$ext"
 
-            onLog("Streaming image to staging file: ${tempFile.name} (Expected size: ${if (totalBytes > 0) "$totalBytes bytes" else "Unknown"}, appendMode=$appendMode)")
+            onLog("Streaming media to staging file: ${tempFile.name} (Expected size: ${if (totalBytes > 0) "$totalBytes bytes" else "Unknown"}, appendMode=$appendMode)")
 
             val inputStream = body.byteStream()
             val outputStream = FileOutputStream(tempFile, appendMode)
-            val buffer = ByteArray(32 * 1024)
+            val buffer = ByteArray(128 * 1024)
             var lastProgressTime = System.currentTimeMillis()
             var bytesAtLastInterval = bytesCopied
 
@@ -221,28 +240,28 @@ object ImageDownloader {
             }
 
             if (!tempFile.exists() || tempFile.length() <= 0) {
-                return@withContext Result.failure(Exception("Downloaded image file is empty"))
+                return@withContext Result.failure(Exception("Downloaded media file is empty"))
             }
 
             // Final 100% progress
             onProgress(100f, bytesCopied, bytesCopied, 0.0, 0L)
-            onLog("Image stream received successfully (${bytesCopied} bytes). Validating header...")
+            onLog("Media stream received successfully (${bytesCopied} bytes). Validating header...")
 
             // Basic magic byte validation
-            val validation = validateImageFile(tempFile)
+            val validation = validateMediaFile(tempFile, mediaType)
             if (validation.isFailure) {
                 tempFile.delete()
-                return@withContext Result.failure(validation.exceptionOrNull() ?: Exception("Corrupted image file received"))
+                return@withContext Result.failure(validation.exceptionOrNull() ?: Exception("Corrupted media file received"))
             }
 
             // Export to SAF or local storage directory
             val finalTargetLocation: String = if (!safTreeUri.isNullOrBlank() && StorageUtils.isSafUriWritable(context, safTreeUri)) {
-                onLog("Exporting image to SAF directory: $safTreeUri")
+                onLog("Exporting media to SAF directory: $safTreeUri")
                 val safResult = StorageUtils.exportFileToSaf(
                     context = context,
                     sourceFile = tempFile,
                     treeUriString = safTreeUri,
-                    mediaType = MediaType.IMAGE,
+                    mediaType = mediaType,
                     customFilename = finalFilename
                 )
                 if (safResult.isSuccess) {
@@ -250,19 +269,21 @@ object ImageDownloader {
                     safResult.getOrThrow()
                 } else {
                     onLog("SAF export warning: ${safResult.exceptionOrNull()?.message}. Moving to app Downloads.")
-                    fallbackMoveToDownloads(context, tempFile, finalFilename)
+                    fallbackMoveToDownloads(context, tempFile, finalFilename, mediaType)
                 }
             } else {
-                fallbackMoveToDownloads(context, tempFile, finalFilename)
+                fallbackMoveToDownloads(context, tempFile, finalFilename, mediaType)
             }
 
-            onLog("Image download complete: $finalTargetLocation")
+            onLog("Stream download complete: $finalTargetLocation")
             Result.success(
                 ImageDownloadResult(
                     finalPathOrSafUri = finalTargetLocation,
                     fileName = finalFilename,
                     totalBytes = bytesCopied,
-                    mimeType = rawContentType.ifBlank { "image/jpeg" }
+                    mimeType = rawContentType.ifBlank {
+                        if (mediaType == MediaType.VIDEO) "video/mp4" else if (mediaType == MediaType.AUDIO) "audio/mpeg" else "image/jpeg"
+                    }
                 )
             )
         } catch (e: Exception) {
@@ -271,41 +292,42 @@ object ImageDownloader {
             } else if (!isPausedInterrupted && e.message != "Download paused") {
                 tempFile?.delete()
             }
-            AppLogger.e("ImageDownloader", "Image download failed: ${e.message}")
+            AppLogger.e("ImageDownloader", "Stream download failed: ${e.message}")
             Result.failure(e)
         }
     }
 
-    private fun fallbackMoveToDownloads(context: Context, stagingFile: File, finalFilename: String): String {
-        val imagesDir = StorageUtils.getFallbackDownloadDirectory(context, StorageUtils.SUBDIR_IMAGES)
-        var targetFile = File(imagesDir, finalFilename)
+    private fun fallbackMoveToDownloads(
+        context: Context,
+        stagingFile: File,
+        finalFilename: String,
+        mediaType: MediaType = MediaType.IMAGE
+    ): String {
+        val subfolder = StorageUtils.getSubfolderForMediaType(mediaType, finalFilename.substringAfterLast(".", ""))
+        val targetDir = StorageUtils.getFallbackDownloadDirectory(context, subfolder)
+        var targetFile = File(targetDir, finalFilename)
         if (targetFile.exists()) {
             val base = finalFilename.substringBeforeLast(".")
-            val ext = finalFilename.substringAfterLast(".", "jpg")
-            targetFile = File(imagesDir, "${base}_${System.currentTimeMillis()}.$ext")
+            val ext = finalFilename.substringAfterLast(".", "bin")
+            targetFile = File(targetDir, "${base}_${System.currentTimeMillis()}.$ext")
         }
         stagingFile.copyTo(targetFile, overwrite = true)
         stagingFile.delete()
-        StorageUtils.scanMediaFile(context, targetFile, "image/*")
+        val mimeType = StorageUtils.getMimeTypeForExtension(targetFile.extension, mediaType)
+        StorageUtils.scanMediaFile(context, targetFile, mimeType)
         return targetFile.absolutePath
     }
 
-    private fun validateImageFile(file: File): Result<Unit> {
+    private fun validateMediaFile(file: File, mediaType: MediaType): Result<Unit> {
         return try {
             val bytes = ByteArray(64)
             val read = file.inputStream().use { it.read(bytes) }
-            if (read < 4) return Result.failure(Exception("Image file is too small or truncated"))
-            val classified = DirectMediaInspector.classifyMagicBytes(bytes, read)
-            if (classified != null && classified.first == MediaType.IMAGE) {
-                Result.success(Unit)
+            if (read < 4) return Result.failure(Exception("Media file is too small or truncated"))
+            val str = String(bytes, 0, read, Charsets.US_ASCII).lowercase()
+            if (str.contains("<html") || str.contains("<!doctype")) {
+                Result.failure(Exception("Server returned an HTML webpage instead of a media file"))
             } else {
-                // If magic bytes were generic, check text/html check
-                val str = String(bytes, 0, read, Charsets.US_ASCII).lowercase()
-                if (str.contains("<html") || str.contains("<!doctype")) {
-                    Result.failure(Exception("Server returned an HTML webpage instead of an image"))
-                } else {
-                    Result.success(Unit)
-                }
+                Result.success(Unit)
             }
         } catch (e: Exception) {
             Result.failure(e)

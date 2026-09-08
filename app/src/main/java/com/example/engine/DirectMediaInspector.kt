@@ -33,6 +33,15 @@ object DirectMediaInspector {
         val suggestedExt: String = "bin"
     )
 
+    fun isDirectMediaUrl(url: String): Boolean {
+        val clean = url.substringBefore("?").substringBefore("#").lowercase()
+        return clean.endsWith(".jpg") || clean.endsWith(".jpeg") || clean.endsWith(".png") ||
+                clean.endsWith(".webp") || clean.endsWith(".gif") || clean.endsWith(".avif") ||
+                clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".mkv") ||
+                clean.endsWith(".mov") || clean.endsWith(".mp3") || clean.endsWith(".m4a") ||
+                clean.endsWith(".flac") || clean.endsWith(".opus") || clean.endsWith(".wav")
+    }
+
     /**
      * Directly inspects URL and constructs a canonical MediaCollection with a single MediaItem.
      */

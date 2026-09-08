@@ -20,8 +20,11 @@ class DownloadRepository(
     val allHistoryFlow: Flow<List<DownloadHistoryEntity>> = database.downloadDao().getAllHistoryFlow()
     val settingsFlow: StateFlow<AppSettings> = downloadManager.settingsFlow
 
-    suspend fun analyzeMediaCollection(url: String): Result<com.example.data.model.MediaCollection> {
-        return engine.analyzeMediaCollection(url, settingsFlow.value)
+    suspend fun analyzeMediaCollection(
+        url: String,
+        mode: com.example.data.model.DownloadMode = com.example.data.model.DownloadMode.AUTO
+    ): Result<com.example.data.model.MediaCollection> {
+        return engine.analyzeMediaCollection(url, settingsFlow.value, mode)
     }
 
     suspend fun analyzeUrl(url: String): Result<MediaMetadata> {
