@@ -46,6 +46,20 @@ class MediaExtractionEngine(private val context: Context) {
         try {
             when (mode) {
                 DownloadMode.VIDEO -> {
+                    // For Instagram links, do NOT bypass metadata inspection
+                    val isInstagram = canonicalUrl.contains("instagram.com", ignoreCase = true) ||
+                            canonicalUrl.contains("instagr.am", ignoreCase = true)
+                    if (isInstagram) {
+                        AppLogger.i("MediaExtractionEngine", "Instagram URL in VIDEO mode: Performing metadata inspection")
+                        val igMedia = withTimeoutOrNull(6000L) {
+                            PageMetadataExtractor.extractInstagramMedia(canonicalUrl)
+                        }
+                        if (igMedia != null) {
+                            AppLogger.i("MediaExtractionEngine", "Instagram metadata extracted successfully (${igMedia.javaClass.simpleName})")
+                            return@withContext Result.success(igMedia.toMediaCollection())
+                        }
+                    }
+
                     // Video Only / Quick yt-dlp:
                     // Skip complex DOM/JSON page scraping and dump-single-json.
                     // If direct video, inspect quickly. Otherwise return sensible defaults for yt-dlp download.
@@ -237,6 +251,15 @@ class MediaExtractionEngine(private val context: Context) {
                     AppLogger.i("MediaExtractionEngine", "Analysis completed")
                     return Result.success(pageMedia.toMediaCollection())
                 }
+                is ExtractedMedia.Video -> {
+                    val directUrl = pageMedia.metadata.directDownloadUrl
+                    if (!directUrl.isNullOrBlank() && (directUrl.contains(".mp4") || directUrl.startsWith("http"))) {
+                        AppLogger.i("MediaExtractionEngine", "Page metadata completed: Extracted direct Video (${pageMedia.metadata.title})")
+                        AppLogger.i("MediaExtractionEngine", "Analysis completed")
+                        return Result.success(pageMedia.toMediaCollection())
+                    }
+                    AppLogger.i("MediaExtractionEngine", "Page metadata completed: Video found without direct stream")
+                }
                 else -> {
                     AppLogger.i("MediaExtractionEngine", "Page metadata completed")
                 }
@@ -249,8 +272,12 @@ class MediaExtractionEngine(private val context: Context) {
         AppLogger.i("MediaExtractionEngine", "yt-dlp fallback started")
         val binary = YtDlpBinaryManager.getBinaryFile(context)
         val binaryPath = binary?.absolutePath ?: "yt-dlp"
+        val isMetaUrl = canonicalUrl.contains("instagram.com", ignoreCase = true) ||
+                canonicalUrl.contains("instagr.am", ignoreCase = true) ||
+                canonicalUrl.contains("facebook.com", ignoreCase = true) ||
+                canonicalUrl.contains("fb.watch", ignoreCase = true)
         val customArgsBuilder = StringBuilder()
-        if (!userAgent.isNullOrBlank()) {
+        if (!userAgent.isNullOrBlank() && !isMetaUrl) {
             customArgsBuilder.append("--user-agent \"$userAgent\" ")
         }
         if (!proxyUrl.isNullOrBlank()) {

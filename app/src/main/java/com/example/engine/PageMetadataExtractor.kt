@@ -419,22 +419,168 @@ object PageMetadataExtractor {
         return null
     }
 
-    suspend fun extractInstagramMedia(url: String): ExtractedMedia? {
-        val lower = url.lowercase()
-        // If explicitly a Reel, TV, or Stories URL, let yt-dlp handle it directly
-        if (lower.contains("/reel/") || lower.contains("/reels/") || lower.contains("/tv/") || lower.contains("/stories/")) {
-            AppLogger.d("PageMetadataExtractor", "Instagram URL is a Reel/Video; routing directly to yt-dlp")
-            return null
-        }
+    data class LdJsonVideoResult(
+        val videoUrl: String,
+        val title: String? = null,
+        val description: String? = null,
+        val thumbnailUrl: String? = null
+    )
 
+    private fun extractLdJsonVideo(html: String): LdJsonVideoResult? {
         try {
-            val html = fetchHtml(url, userAgent = CRAWLER_USER_AGENT)
-                ?: fetchHtml(url, userAgent = BROWSER_USER_AGENT)
+            val scriptPattern = Pattern.compile(
+                "<script[^>]*type\\s*=\\s*[\"']application/ld\\+json[\"'][^>]*>(.*?)</script>",
+                Pattern.CASE_INSENSITIVE or Pattern.DOTALL
+            )
+            val matcher = scriptPattern.matcher(html)
+            while (matcher.find()) {
+                val jsonStr = matcher.group(1)?.trim() ?: continue
+                if (jsonStr.isBlank()) continue
+
+                if (jsonStr.startsWith("{")) {
+                    val obj = JSONObject(jsonStr)
+                    val result = parseLdJsonObject(obj)
+                    if (result != null) return result
+                } else if (jsonStr.startsWith("[")) {
+                    val arr = JSONArray(jsonStr)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val result = parseLdJsonObject(obj)
+                        if (result != null) return result
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.d("PageMetadataExtractor", "Error parsing ld+json: ${e.message}")
+        }
+        return null
+    }
+
+    private fun parseLdJsonObject(obj: JSONObject): LdJsonVideoResult? {
+        val contentUrl = obj.optString("contentUrl").ifBlank {
+            obj.optJSONObject("video")?.optString("contentUrl").orEmpty()
+        }
+        if (contentUrl.isNotBlank() && !contentUrl.contains(".html")) {
+            val name = obj.optString("name").ifBlank { null }
+            val desc = obj.optString("description").ifBlank { null }
+            val thumb = obj.optString("thumbnailUrl").ifBlank {
+                val thumbArr = obj.optJSONArray("thumbnailUrl")
+                thumbArr?.optString(0, "")?.ifBlank { null }
+            }
+            return LdJsonVideoResult(
+                videoUrl = decodeHtmlEntities(contentUrl),
+                title = name?.let { cleanText(it) },
+                description = desc?.let { cleanText(it) },
+                thumbnailUrl = thumb?.let { decodeHtmlEntities(it) }
+            )
+        }
+        return null
+    }
+
+    private fun extractScriptVideoUrl(html: String): String? {
+        try {
+            val patterns = listOf(
+                Pattern.compile("\"video_url\"\\s*:\\s*\"(https?:\\\\/\\\\/[^\"]+)\"", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\"video_url\"\\s*:\\s*\"(https?://[^\"]+)\"", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\"playable_url_quality_hd\"\\s*:\\s*\"(https?:\\\\/\\\\/[^\"]+)\"", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\"playable_url\"\\s*:\\s*\"(https?:\\\\/\\\\/[^\"]+)\"", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\"contentUrl\"\\s*:\\s*\"(https?:\\\\/\\\\/[^\"]+\\.mp4[^\"]*)\"", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("\"contentUrl\"\\s*:\\s*\"(https?://[^\"]+\\.mp4[^\"]*)\"", Pattern.CASE_INSENSITIVE)
+            )
+            for (p in patterns) {
+                val m = p.matcher(html)
+                if (m.find()) {
+                    val raw = m.group(1)?.replace("\\/", "/")?.replace("\\u0026", "&") ?: continue
+                    if (raw.isNotBlank() && !raw.contains(".html")) {
+                        return raw
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.d("PageMetadataExtractor", "Error extracting script video url: ${e.message}")
+        }
+        return null
+    }
+
+    private fun createDirectInstagramVideoMedia(
+        url: String,
+        directVideoUrl: String,
+        title: String,
+        thumbnail: String,
+        width: Int? = null,
+        height: Int? = null
+    ): ExtractedMedia.Video {
+        val meta = MediaMetadata(
+            id = "ig_reel_" + UUID.randomUUID().toString().take(8),
+            title = title,
+            webpageUrl = url,
+            uploader = "Instagram",
+            thumbnail = thumbnail,
+            directDownloadUrl = directVideoUrl,
+            mediaType = MediaType.VIDEO,
+            mimeType = "video/mp4",
+            width = width,
+            height = height,
+            formats = listOf(
+                FormatInfo(
+                    formatId = "direct_video",
+                    ext = "mp4",
+                    url = directVideoUrl,
+                    resolution = if (width != null && height != null) "${width}x${height}" else "Best Video (Direct)",
+                    isMuxed = true
+                )
+            ),
+            extractorName = "InstagramDirectExtractor"
+        )
+        return ExtractedMedia.Video(meta)
+    }
+
+    suspend fun extractInstagramMedia(url: String): ExtractedMedia? {
+        try {
+            AppLogger.i("PageMetadataExtractor", "Extracting Instagram media for $url")
+            // Fetch raw HTML using standard Desktop User-Agent first
+            val html = fetchHtml(url, userAgent = BROWSER_USER_AGENT)
+                ?: fetchHtml(url, userAgent = CRAWLER_USER_AGENT)
                 ?: return null
 
-            // Look for carousel items in embedded JSON scripts
+            // 1. Look for OpenGraph og:video or og:video:secure_url
+            val ogVideo = extractMetaTag(html, "og:video:secure_url")
+                ?: extractMetaTag(html, "og:video")
+                ?: extractMetaTag(html, "og:video:url")
+
+            if (!ogVideo.isNullOrBlank() && !ogVideo.contains(".html")) {
+                val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Reel"
+                val thumbnail = extractMetaTag(html, "og:image:secure_url")
+                    ?: extractMetaTag(html, "og:image")
+                    ?: ""
+                val directVideoUrl = decodeHtmlEntities(ogVideo)
+                AppLogger.i("PageMetadataExtractor", "RETURN direct Video for Instagram from OpenGraph: $directVideoUrl")
+                return createDirectInstagramVideoMedia(
+                    url = url,
+                    directVideoUrl = directVideoUrl,
+                    title = cleanText(title),
+                    thumbnail = decodeHtmlEntities(thumbnail)
+                )
+            }
+
+            // 2. Look for video link inside embedded JSON-LD (<script type="application/ld+json">)
+            val ldJsonVideo = extractLdJsonVideo(html)
+            if (ldJsonVideo != null && ldJsonVideo.videoUrl.isNotBlank()) {
+                val title = ldJsonVideo.title ?: extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Reel"
+                val thumbnail = ldJsonVideo.thumbnailUrl ?: extractMetaTag(html, "og:image:secure_url") ?: extractMetaTag(html, "og:image").orEmpty()
+                val directVideoUrl = decodeHtmlEntities(ldJsonVideo.videoUrl)
+                AppLogger.i("PageMetadataExtractor", "RETURN direct Video for Instagram from JSON-LD: $directVideoUrl")
+                return createDirectInstagramVideoMedia(
+                    url = url,
+                    directVideoUrl = directVideoUrl,
+                    title = cleanText(title),
+                    thumbnail = decodeHtmlEntities(thumbnail)
+                )
+            }
+
+            // 3. Look for carousel items in embedded JSON scripts
             val carouselItems = extractInstagramCarouselItems(html)
-            if (carouselItems.isNotEmpty()) {
+            if (carouselItems.size > 1) {
                 val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Post"
                 AppLogger.i("PageMetadataExtractor", "RETURN Carousel for Instagram (${carouselItems.size} items)")
                 return ExtractedMedia.Carousel(
@@ -445,15 +591,41 @@ object PageMetadataExtractor {
                     thumbnail = carouselItems.firstOrNull()?.thumbnail.orEmpty(),
                     items = carouselItems
                 )
+            } else if (carouselItems.size == 1) {
+                val singleCarousel = carouselItems.first()
+                if (singleCarousel.mediaType == MediaType.VIDEO && singleCarousel.sourceUrl.isNotBlank()) {
+                    val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Reel"
+                    val directVideoUrl = decodeHtmlEntities(singleCarousel.sourceUrl)
+                    AppLogger.i("PageMetadataExtractor", "RETURN direct Video for Instagram from sidecar: $directVideoUrl")
+                    return createDirectInstagramVideoMedia(
+                        url = url,
+                        directVideoUrl = directVideoUrl,
+                        title = cleanText(title),
+                        thumbnail = singleCarousel.thumbnail,
+                        width = singleCarousel.width,
+                        height = singleCarousel.height
+                    )
+                }
             }
 
-            // Check if single image post without video
-            val hasVideo = extractMetaTag(html, "og:video") != null || html.contains("\"is_video\":true")
-            if (hasVideo) {
-                AppLogger.d("PageMetadataExtractor", "Instagram post contains video; routing to yt-dlp")
-                return null // Let yt-dlp handle video
+            // 4. Look for embedded video_url or playable_url in script tags
+            val scriptVideoUrl = extractScriptVideoUrl(html)
+            if (!scriptVideoUrl.isNullOrBlank()) {
+                val title = extractMetaTag(html, "og:title") ?: extractTitle(html) ?: "Instagram Reel"
+                val thumbnail = extractMetaTag(html, "og:image:secure_url")
+                    ?: extractMetaTag(html, "og:image")
+                    ?: ""
+                val directVideoUrl = decodeHtmlEntities(scriptVideoUrl)
+                AppLogger.i("PageMetadataExtractor", "RETURN direct Video for Instagram from script regex: $directVideoUrl")
+                return createDirectInstagramVideoMedia(
+                    url = url,
+                    directVideoUrl = directVideoUrl,
+                    title = cleanText(title),
+                    thumbnail = decodeHtmlEntities(thumbnail)
+                )
             }
 
+            // 5. Check if single image post
             val ogImage = extractMetaTag(html, "og:image:secure_url")
                 ?: extractMetaTag(html, "og:image")
                 ?: extractMetaTag(html, "twitter:image")
@@ -744,6 +916,12 @@ object PageMetadataExtractor {
      */
     suspend fun extractSocialVideoOrImageFallback(url: String): ExtractedMedia? {
         val cleanUrl = url.trim()
+        val lower = cleanUrl.lowercase()
+        if (lower.contains("instagram.com") || lower.contains("instagr.am")) {
+            val igMedia = extractInstagramMedia(cleanUrl)
+            if (igMedia != null) return igMedia
+        }
+
         try {
             val html = fetchHtml(cleanUrl, userAgent = CRAWLER_USER_AGENT)
                 ?: fetchHtml(cleanUrl, userAgent = BROWSER_USER_AGENT)

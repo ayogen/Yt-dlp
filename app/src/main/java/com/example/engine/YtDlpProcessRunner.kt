@@ -27,6 +27,13 @@ object YtDlpProcessRunner {
         }
     }
 
+    private fun isInstagramOrMetaUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("instagram.com") || lower.contains("instagr.am") ||
+                lower.contains("facebook.com") || lower.contains("fb.watch") ||
+                lower.contains("fb.com") || lower.contains("meta.com")
+    }
+
     suspend fun extractMetadataCli(
         binaryPath: String,
         url: String,
@@ -41,8 +48,9 @@ object YtDlpProcessRunner {
             request.addOption("--flat-playlist")
             request.addOption("--socket-timeout", "15")
 
+            val isMetaUrl = isInstagramOrMetaUrl(url)
             val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
-            if (!hasCustomUserAgent) {
+            if (!hasCustomUserAgent && !isMetaUrl) {
                 request.addOption("--user-agent", CHROME_USER_AGENT)
             }
 
@@ -130,8 +138,9 @@ object YtDlpProcessRunner {
             request.addOption("--flat-playlist")
             request.addOption("--socket-timeout", "15")
 
+            val isMetaUrl = isInstagramOrMetaUrl(url)
             val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
-            if (!hasCustomUserAgent) {
+            if (!hasCustomUserAgent && !isMetaUrl) {
                 request.addOption("--user-agent", CHROME_USER_AGENT)
             }
 
@@ -371,8 +380,9 @@ object YtDlpProcessRunner {
                 }
             }
 
+            val isMetaDownloadUrl = isInstagramOrMetaUrl(url)
             val hasCustomUserAgent = customArgs.contains("--user-agent", ignoreCase = true)
-            if (!hasCustomUserAgent) {
+            if (!hasCustomUserAgent && !isMetaDownloadUrl) {
                 request.addOption("--user-agent", CHROME_USER_AGENT)
             }
 
