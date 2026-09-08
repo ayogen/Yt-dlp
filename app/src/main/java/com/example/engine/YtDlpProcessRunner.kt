@@ -309,7 +309,7 @@ object YtDlpProcessRunner {
             request.addOption("--newline")
             request.addOption("--no-playlist")
             request.addOption("--concurrent-fragments", "4")
-            request.addOption("--buffersize", "64K")
+            request.addOption("--buffer-size", "64K")
             request.addOption("--http-chunk-size", "10M")
 
             // Audio extraction vs Video muxing configuration
