@@ -71,23 +71,23 @@ class MediaExtractionEngine(private val context: Context) {
                             vcodec = "best",
                             acodec = "best",
                             url = canonicalUrl,
-                            displayResolution = "Best Video (Muxed)",
+                            resolution = "Best Video (Muxed)",
                             isMuxed = true
                         ),
                         FormatInfo(
                             formatId = "best",
                             ext = "mp4",
-                            displayResolution = "Single Stream (Best)"
+                            resolution = "Single Stream (Best)"
                         ),
                         FormatInfo(
                             formatId = "bestvideo[height<=1080]+bestaudio/best",
                             ext = "mp4",
-                            displayResolution = "1080p (Max)"
+                            resolution = "1080p (Max)"
                         ),
                         FormatInfo(
                             formatId = "bestvideo[height<=720]+bestaudio/best",
                             ext = "mp4",
-                            displayResolution = "720p (HD)"
+                            resolution = "720p (HD)"
                         )
                     )
                     val videoItem = MediaItem(
