@@ -523,6 +523,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val ex = result.exceptionOrNull() ?: Exception("Unknown analysis failure")
                     val diag = engine.classifyError(ex)
                     _analysisState.value = AnalysisUiState.Error(diag)
+                    _toastMessage.value = diag.reason.ifBlank { diag.suggestedAction }.ifBlank { ex.message ?: "Analysis failed" }
                 }
             } catch (e: CancellationException) {
                 AppLogger.d("MainViewModel", "Analysis job cancelled")
@@ -534,6 +535,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 AppLogger.e("MainViewModel", "Analysis exception: ${e.message}")
                 val diag = engine.classifyError(e)
                 _analysisState.value = AnalysisUiState.Error(diag)
+                _toastMessage.value = diag.reason.ifBlank { diag.suggestedAction }.ifBlank { e.message ?: "Analysis failed" }
             }
         }
     }

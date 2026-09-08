@@ -12,7 +12,9 @@ import com.example.data.model.MediaType
 import com.example.data.model.SizeProvenance
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
@@ -44,133 +46,131 @@ class MediaExtractionEngine(private val context: Context) {
         AppLogger.i("MediaExtractionEngine", "Canonical analysis started ($mode) for: $canonicalUrl")
 
         try {
-            when (mode) {
-                DownloadMode.VIDEO -> {
-                    // For Instagram links, do NOT bypass metadata inspection
-                    val isInstagram = canonicalUrl.contains("instagram.com", ignoreCase = true) ||
-                            canonicalUrl.contains("instagr.am", ignoreCase = true)
-                    if (isInstagram) {
-                        AppLogger.i("MediaExtractionEngine", "Instagram URL in VIDEO mode: Performing metadata inspection")
-                        val igMedia = withTimeoutOrNull(6000L) {
-                            PageMetadataExtractor.extractInstagramMedia(canonicalUrl)
+            withTimeout(8000L) {
+                // Dedicated Instagram handler: inspect metadata & embed pages without mobile login gates
+                val isInstagram = canonicalUrl.contains("instagram.com", ignoreCase = true) ||
+                        canonicalUrl.contains("instagr.am", ignoreCase = true)
+                if (isInstagram) {
+                    AppLogger.i("MediaExtractionEngine", "Instagram URL detected: Performing dedicated metadata extraction")
+                    val igMedia = PageMetadataExtractor.extractInstagramMedia(canonicalUrl)
+                    if (igMedia != null) {
+                        AppLogger.i("MediaExtractionEngine", "Instagram metadata extracted successfully (${igMedia.javaClass.simpleName})")
+                        return@withTimeout Result.success(igMedia.toMediaCollection())
+                    } else {
+                        return@withTimeout Result.failure(Exception("Unable to extract media from this Instagram link. The post may be private or unavailable."))
+                    }
+                }
+
+                when (mode) {
+                    DownloadMode.VIDEO -> {
+                        // Video Only / Quick yt-dlp:
+                        // Skip complex DOM/JSON page scraping and dump-single-json.
+                        // If direct video, inspect quickly. Otherwise return sensible defaults for yt-dlp download.
+                        val cleanNoQuery = canonicalUrl.substringBefore("?").lowercase()
+                        if (cleanNoQuery.endsWith(".mp4") || cleanNoQuery.endsWith(".mkv") ||
+                            cleanNoQuery.endsWith(".webm") || cleanNoQuery.endsWith(".mov")
+                        ) {
+                            val directResult = withTimeoutOrNull(3000L) {
+                                DirectMediaInspector.inspectMediaCollection(canonicalUrl)
+                            }
+                            if (directResult != null && directResult.isSuccess) {
+                                return@withTimeout directResult
+                            }
                         }
-                        if (igMedia != null) {
-                            AppLogger.i("MediaExtractionEngine", "Instagram metadata extracted successfully (${igMedia.javaClass.simpleName})")
-                            return@withContext Result.success(igMedia.toMediaCollection())
-                        }
+
+                        val titleFromUrl = canonicalUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
+                            .ifBlank { "video_${System.currentTimeMillis()}" }
+                        val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
+                        val defaultFormats = listOf(
+                            FormatInfo(
+                                formatId = "bestvideo+bestaudio/best",
+                                ext = "mp4",
+                                vcodec = "best",
+                                acodec = "best",
+                                url = canonicalUrl,
+                                resolution = "Best Video (Muxed)",
+                                isMuxed = true
+                            ),
+                            FormatInfo(
+                                formatId = "best",
+                                ext = "mp4",
+                                resolution = "Single Stream (Best)"
+                            ),
+                            FormatInfo(
+                                formatId = "bestvideo[height<=1080]+bestaudio/best",
+                                ext = "mp4",
+                                resolution = "1080p (Max)"
+                            ),
+                            FormatInfo(
+                                formatId = "bestvideo[height<=720]+bestaudio/best",
+                                ext = "mp4",
+                                resolution = "720p (HD)"
+                            )
+                        )
+                        val videoItem = MediaItem(
+                            id = "video_" + UUID.randomUUID().toString().take(8),
+                            title = cleanTitle,
+                            sourceUrl = canonicalUrl,
+                            webpageUrl = canonicalUrl,
+                            thumbnail = "",
+                            mediaKind = MediaKind.VIDEO,
+                            formats = defaultFormats,
+                            index = 0
+                        )
+                        val quickCollection = MediaCollection(
+                            id = videoItem.id,
+                            title = cleanTitle,
+                            webpageUrl = canonicalUrl,
+                            thumbnail = "",
+                            mediaKind = MediaKind.VIDEO,
+                            items = listOf(videoItem),
+                            extractorName = "QuickYtDlpVideo"
+                        )
+                        AppLogger.i("MediaExtractionEngine", "VIDEO mode: Returning fast yt-dlp video configuration")
+                        Result.success(quickCollection)
                     }
 
-                    // Video Only / Quick yt-dlp:
-                    // Skip complex DOM/JSON page scraping and dump-single-json.
-                    // If direct video, inspect quickly. Otherwise return sensible defaults for yt-dlp download.
-                    val cleanNoQuery = canonicalUrl.substringBefore("?").lowercase()
-                    if (cleanNoQuery.endsWith(".mp4") || cleanNoQuery.endsWith(".mkv") ||
-                        cleanNoQuery.endsWith(".webm") || cleanNoQuery.endsWith(".mov")
-                    ) {
-                        val directResult = withTimeoutOrNull(3000L) {
+                    DownloadMode.IMAGE -> {
+                        // Images Only / Direct Stream:
+                        // Completely bypass Python / yt-dlp.
+                        // Inspect directly via DirectMediaInspector and PageMetadataExtractor.
+                        AppLogger.i("MediaExtractionEngine", "IMAGE mode: Running direct & page inspection, bypassing yt-dlp")
+                        val directResult = withTimeoutOrNull(4000L) {
                             DirectMediaInspector.inspectMediaCollection(canonicalUrl)
                         }
                         if (directResult != null && directResult.isSuccess) {
-                            return@withContext directResult
+                            val col = directResult.getOrThrow()
+                            if (col.mediaKind == MediaKind.IMAGE) {
+                                return@withTimeout Result.success(col)
+                            }
                         }
-                    }
 
-                    val titleFromUrl = canonicalUrl.substringBefore("?").substringAfterLast("/").substringBeforeLast(".")
-                        .ifBlank { "video_${System.currentTimeMillis()}" }
-                    val cleanTitle = FilenameFormatter.sanitize(titleFromUrl)
-                    val defaultFormats = listOf(
-                        FormatInfo(
-                            formatId = "bestvideo+bestaudio/best",
-                            ext = "mp4",
-                            vcodec = "best",
-                            acodec = "best",
-                            url = canonicalUrl,
-                            resolution = "Best Video (Muxed)",
-                            isMuxed = true
-                        ),
-                        FormatInfo(
-                            formatId = "best",
-                            ext = "mp4",
-                            resolution = "Single Stream (Best)"
-                        ),
-                        FormatInfo(
-                            formatId = "bestvideo[height<=1080]+bestaudio/best",
-                            ext = "mp4",
-                            resolution = "1080p (Max)"
-                        ),
-                        FormatInfo(
-                            formatId = "bestvideo[height<=720]+bestaudio/best",
-                            ext = "mp4",
-                            resolution = "720p (HD)"
-                        )
-                    )
-                    val videoItem = MediaItem(
-                        id = "video_" + UUID.randomUUID().toString().take(8),
-                        title = cleanTitle,
-                        sourceUrl = canonicalUrl,
-                        webpageUrl = canonicalUrl,
-                        thumbnail = "",
-                        mediaKind = MediaKind.VIDEO,
-                        formats = defaultFormats,
-                        index = 0
-                    )
-                    val quickCollection = MediaCollection(
-                        id = videoItem.id,
-                        title = cleanTitle,
-                        webpageUrl = canonicalUrl,
-                        thumbnail = "",
-                        mediaKind = MediaKind.VIDEO,
-                        items = listOf(videoItem),
-                        extractorName = "QuickYtDlpVideo"
-                    )
-                    AppLogger.i("MediaExtractionEngine", "VIDEO mode: Returning fast yt-dlp video configuration")
-                    return@withContext Result.success(quickCollection)
-                }
-
-                DownloadMode.IMAGE -> {
-                    // Images Only / Direct Stream:
-                    // Completely bypass Python / yt-dlp.
-                    // Inspect directly via DirectMediaInspector and PageMetadataExtractor.
-                    AppLogger.i("MediaExtractionEngine", "IMAGE mode: Running direct & page inspection, bypassing yt-dlp")
-                    val directResult = withTimeoutOrNull(4000L) {
-                        DirectMediaInspector.inspectMediaCollection(canonicalUrl)
-                    }
-                    if (directResult != null && directResult.isSuccess) {
-                        val col = directResult.getOrThrow()
-                        if (col.mediaKind == MediaKind.IMAGE) {
-                            return@withContext Result.success(col)
+                        val pageMedia = withTimeoutOrNull(5000L) {
+                            PageMetadataExtractor.extractPageMedia(canonicalUrl)
+                                ?: PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
                         }
-                    }
-
-                    val pageMedia = withTimeoutOrNull(5000L) {
-                        PageMetadataExtractor.extractPageMedia(canonicalUrl)
-                            ?: PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
-                    }
-                    if (pageMedia != null) {
-                        val col = pageMedia.toMediaCollection()
-                        val sanitizedItems = col.items.map { it.copy(mediaKind = MediaKind.IMAGE, isSelected = true) }
-                        return@withContext Result.success(
-                            col.copy(
-                                mediaKind = if (sanitizedItems.size > 1) MediaKind.CAROUSEL else MediaKind.IMAGE,
-                                items = sanitizedItems
+                        if (pageMedia != null) {
+                            val col = pageMedia.toMediaCollection()
+                            val sanitizedItems = col.items.map { it.copy(mediaKind = MediaKind.IMAGE, isSelected = true) }
+                            Result.success(
+                                col.copy(
+                                    mediaKind = if (sanitizedItems.size > 1) MediaKind.CAROUSEL else MediaKind.IMAGE,
+                                    items = sanitizedItems
+                                )
                             )
-                        )
+                        } else {
+                            Result.failure(Exception("No image or photo carousel found at this URL."))
+                        }
                     }
 
-                    return@withContext Result.failure(Exception("No image or photo carousel found at this URL."))
-                }
-
-                DownloadMode.AUTO -> {
-                    val overallResult = withTimeoutOrNull(50000L) {
+                    DownloadMode.AUTO -> {
                         runCanonicalExtractionPipeline(canonicalUrl, cookiesFile, userAgent, proxyUrl, geoBypass)
                     }
-                    if (overallResult != null) {
-                        return@withContext overallResult
-                    }
-                    AppLogger.e("MediaExtractionEngine", "Analysis failed: Global analysis timeout exceeded (50s)")
-                    Result.failure(Exception("Media analysis timed out after 50 seconds. The host or media server did not respond in time."))
                 }
             }
+        } catch (e: TimeoutCancellationException) {
+            AppLogger.e("MediaExtractionEngine", "Media analysis timed out after 8s: ${e.message}")
+            Result.failure(Exception("Media analysis timed out after 8 seconds. The host or media server did not respond in time."))
         } catch (e: CancellationException) {
             AppLogger.i("MediaExtractionEngine", "Analysis cancelled")
             throw e
