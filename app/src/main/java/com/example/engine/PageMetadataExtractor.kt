@@ -2,6 +2,7 @@ package com.example.engine
 
 import com.example.data.model.CarouselItem
 import com.example.data.model.ExtractedMedia
+import com.example.data.model.FormatInfo
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.engine.HttpCoroutineUtils.executeAsync
