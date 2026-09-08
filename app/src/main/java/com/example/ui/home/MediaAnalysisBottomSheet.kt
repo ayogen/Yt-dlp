@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.AudioFormat
 import com.example.data.model.FormatInfo
+import com.example.data.model.MediaCollection
 import com.example.data.model.MediaMetadata
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
@@ -952,6 +953,30 @@ fun MediaAnalysisBottomSheet(
 ) {
     val uiModel = remember(metadata) {
         MediaUiMapper.mapMetadataToUiModel(metadata)
+    }
+    MediaAnalysisBottomSheet(
+        uiModel = uiModel,
+        onDismiss = onDismiss,
+        onDownload = onDownload
+    )
+}
+
+@Composable
+fun MediaAnalysisBottomSheet(
+    collection: MediaCollection,
+    onDismiss: () -> Unit,
+    onDownload: (
+        format: FormatInfo?,
+        mediaType: MediaType,
+        container: OutputContainer,
+        audioBitrate: Int?,
+        embedSubs: Boolean,
+        embedThumb: Boolean,
+        selectedIndices: Set<Int>
+    ) -> Unit
+) {
+    val uiModel = remember(collection) {
+        MediaUiMapper.mapCollectionToUiModel(collection)
     }
     MediaAnalysisBottomSheet(
         uiModel = uiModel,

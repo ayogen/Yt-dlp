@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.DownloadHistoryEntity
+import com.example.data.model.FormatInfo
 import com.example.data.model.MediaType
 import com.example.data.model.OutputContainer
 import com.example.data.model.formatBytes
@@ -506,8 +507,10 @@ fun HomeScreen(viewModel: MainViewModel) {
         MediaAnalysisBottomSheet(
             collection = successState.collection,
             onDismiss = { viewModel.clearAnalysis() },
-            onDownload = { format, mediaType, container, bitrate, embedSubs, embedThumb, selectedIndices ->
-                val quality = format?.displayResolution ?: "Best"
+            onDownload = { format: FormatInfo?, mediaType: MediaType, container: OutputContainer, bitrate: Int?, embedSubs: Boolean, embedThumb: Boolean, selectedIndices: Set<Int> ->
+                val quality = format?.displayResolution?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: format?.resolution?.takeIf { it.isNotBlank() }
+                    ?: "Best"
                 viewModel.startDownloadWithCollection(
                     collection = successState.collection,
                     selectedFormat = format,
