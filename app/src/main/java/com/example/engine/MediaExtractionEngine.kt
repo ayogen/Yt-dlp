@@ -169,35 +169,65 @@ class MediaExtractionEngine(private val context: Context) {
             Result.failure(e)
         }
 
-        if (ytDlpResult != null && ytDlpResult.isSuccess) {
-            val col = ytDlpResult.getOrThrow()
-            AppLogger.i("MediaExtractionEngine", "yt-dlp completed")
+        val ytCollection = ytDlpResult?.getOrNull()
+        val hasPlayableMedia = ytCollection != null && ytCollection.items.isNotEmpty() && (
+            ytCollection.mediaKind == MediaKind.IMAGE ||
+            ytCollection.mediaKind == MediaKind.CAROUSEL ||
+            ytCollection.mediaKind == MediaKind.AUDIO ||
+            ytCollection.items.any { item ->
+                item.isImage || item.isAudio || item.formats.any { fmt ->
+                    !fmt.isAudioOnly && (fmt.height != null && fmt.height > 0 || (fmt.vcodec.isNotBlank() && fmt.vcodec != "none"))
+                } || (item.sourceUrl.isNotBlank() && (item.formats.isNotEmpty() || ytCollection.items.size > 1))
+            }
+        )
+
+        if (ytDlpResult != null && ytDlpResult.isSuccess && hasPlayableMedia) {
+            AppLogger.i("MediaExtractionEngine", "yt-dlp completed with playable media formats")
             AppLogger.i("MediaExtractionEngine", "Analysis completed")
-            return Result.success(col)
+            return Result.success(ytCollection!!)
         }
 
-        val ytDlpError = if (ytDlpResult == null) "Extraction timed out after 20s" else ytDlpResult.exceptionOrNull()?.message.orEmpty()
-        AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError")
-
-        // Stage 4: Embedded extractor & Generic OpenGraph fallback
-        if (pageMedia != null) {
-            AppLogger.i("MediaExtractionEngine", "Analysis completed")
-            return Result.success(pageMedia.toMediaCollection())
+        val ytDlpError = when {
+            ytDlpResult == null -> "Extraction timed out after 20s"
+            ytDlpResult.isFailure -> ytDlpResult.exceptionOrNull()?.message.orEmpty()
+            !hasPlayableMedia -> "yt-dlp returned zero playable video formats"
+            else -> "yt-dlp extraction inconclusive"
         }
+        AppLogger.w("MediaExtractionEngine", "yt-dlp completed/failed: $ytDlpError. Triggering image/DOM fallback.")
 
-        val pageMediaFallback = try {
-            withTimeoutOrNull(5000L) {
-                PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
+        // Stage 4: Comprehensive DOM/JSON-LD, OpenGraph, and Responsive Image Fallback
+        val fallbackMedia = pageMedia ?: try {
+            withTimeoutOrNull(6000L) {
+                PageMetadataExtractor.extractPageMedia(canonicalUrl)
+                    ?: PageMetadataExtractor.extractGenericPageMedia(canonicalUrl)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            AppLogger.w("MediaExtractionEngine", "PageMetadataExtractor fallback error: ${e.message}")
             null
         }
 
-        if (pageMediaFallback != null) {
+        if (fallbackMedia != null) {
+            val fallbackCollection = fallbackMedia.toMediaCollection()
+            // Explicitly ensure images are mapped to MediaKind.IMAGE so DownloadPlanner and DownloadManager route them directly to ImageDownloader
+            val sanitizedItems = fallbackCollection.items.map { item ->
+                if (fallbackCollection.mediaKind == MediaKind.IMAGE || item.isImage || fallbackMedia is ExtractedMedia.Image) {
+                    item.copy(
+                        mediaKind = MediaKind.IMAGE,
+                        isSelected = true
+                    )
+                } else {
+                    item
+                }
+            }
+            val finalCollection = fallbackCollection.copy(
+                mediaKind = if (fallbackMedia is ExtractedMedia.Image) MediaKind.IMAGE else fallbackCollection.mediaKind,
+                items = sanitizedItems
+            )
+            AppLogger.i("MediaExtractionEngine", "Fallback successful: Extracted ${finalCollection.mediaKind} (${finalCollection.title}) with ${finalCollection.items.size} item(s)")
             AppLogger.i("MediaExtractionEngine", "Analysis completed")
-            return Result.success(pageMediaFallback.toMediaCollection())
+            return Result.success(finalCollection)
         }
 
         val embeddedResult = try {
@@ -211,7 +241,7 @@ class MediaExtractionEngine(private val context: Context) {
         }
 
         if (embeddedResult != null && embeddedResult.isSuccess) {
-            AppLogger.i("MediaExtractionEngine", "Analysis completed")
+            AppLogger.i("MediaExtractionEngine", "Analysis completed via EmbeddedExtractorEngine")
             return embeddedResult
         }
 
@@ -221,7 +251,7 @@ class MediaExtractionEngine(private val context: Context) {
                 "Media extraction timed out. The server took too long to respond."
             ytDlpError.contains("Private video", ignoreCase = true) || ytDlpError.contains("requires login", ignoreCase = true) || ytDlpError.contains("account is private", ignoreCase = true) ->
                 "This content is private or requires authentication."
-            ytDlpError.contains("No video formats found", ignoreCase = true) ->
+            ytDlpError.contains("No video formats found", ignoreCase = true) || ytDlpError.contains("zero playable", ignoreCase = true) ->
                 "No downloadable media streams were found at this URL."
             ytDlpError.contains("Unsupported URL", ignoreCase = true) ->
                 "Unsupported media URL or webpage format."

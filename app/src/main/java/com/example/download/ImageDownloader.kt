@@ -8,12 +8,12 @@ import com.example.engine.FilenameFormatter
 import com.example.engine.HttpCoroutineUtils.executeAsync
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 object ImageDownloader {
@@ -28,7 +28,7 @@ object ImageDownloader {
     }
 
     private const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
     data class ImageDownloadResult(
         val finalPathOrSafUri: String,
@@ -38,8 +38,41 @@ object ImageDownloader {
     )
 
     /**
+     * Resolves an appropriate context-aware Referer based on the target image URL
+     * or associated webpage URL to bypass CDN 403 Forbidden checks.
+     */
+    fun resolveReferer(imageUrl: String, pageUrl: String? = null): String {
+        if (!pageUrl.isNullOrBlank()) {
+            return pageUrl
+        }
+        val host = runCatching { URI(imageUrl).host?.lowercase() }.getOrNull().orEmpty()
+        return when {
+            host.contains("instagram.com") || host.contains("cdninstagram.com") || host.contains("fbcdn.net") ->
+                "https://www.instagram.com/"
+            host.contains("tiktok.com") || host.contains("tiktokcdn.com") || host.contains("byteoversea.com") || host.contains("ibyteimg.com") ->
+                "https://www.tiktok.com/"
+            host.contains("reddit.com") || host.contains("redditmedia.com") || host.contains("redd.it") ->
+                "https://www.reddit.com/"
+            host.contains("twitter.com") || host.contains("x.com") || host.contains("twimg.com") ->
+                "https://x.com/"
+            host.contains("pinterest.com") || host.contains("pinimg.com") ->
+                "https://www.pinterest.com/"
+            host.contains("facebook.com") ->
+                "https://www.facebook.com/"
+            host.contains("youtube.com") || host.contains("youtu.be") || host.contains("ytimg.com") || host.contains("ggpht.com") ->
+                "https://www.youtube.com/"
+            host.contains("threads.net") ->
+                "https://www.threads.net/"
+            host.isNotBlank() ->
+                "https://$host/"
+            else ->
+                "https://www.google.com/"
+        }
+    }
+
+    /**
      * Downloads an image directly via HTTP streaming without loading the entire image into RAM.
-     * Provides realtime progress callbacks, pause/cancellation checks, and atomic export to SAF.
+     * Provides realtime progress callbacks, non-busy pause/cancellation handling, and atomic export to SAF.
      */
     suspend fun downloadImage(
         context: Context,
@@ -47,27 +80,56 @@ object ImageDownloader {
         suggestedTitle: String,
         customExt: String? = null,
         safTreeUri: String? = null,
+        pageUrl: String? = null,
         isCancelled: () -> Boolean = { false },
         isPaused: () -> Boolean = { false },
         onProgress: (progress: Float, downloaded: Long, total: Long, speed: Double, eta: Long) -> Unit = { _, _, _, _, _ -> },
         onLog: (String) -> Unit = {}
     ): Result<ImageDownloadResult> = withContext(Dispatchers.IO) {
         var tempFile: File? = null
+        var isPausedInterrupted = false
         try {
             onLog("Initiating image download from: $imageUrl")
 
-            val request = Request.Builder()
+            if (isCancelled()) {
+                onLog("Download cancelled before start.")
+                return@withContext Result.failure(CancellationException("Download cancelled"))
+            }
+
+            if (isPaused()) {
+                onLog("Download paused before start.")
+                return@withContext Result.failure(Exception("Download paused"))
+            }
+
+            val sanitizedTitle = FilenameFormatter.sanitize(suggestedTitle.ifBlank { "image_${System.currentTimeMillis()}" })
+            val stagingDir = File(context.cacheDir, "staging_downloads").apply { if (!exists()) mkdirs() }
+            val urlHash = imageUrl.hashCode().toUInt().toString(16)
+            tempFile = File(stagingDir, "img_${urlHash}_${sanitizedTitle.take(24)}.tmp")
+
+            val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+
+            val referer = resolveReferer(imageUrl, pageUrl)
+            val requestBuilder = Request.Builder()
                 .url(imageUrl)
                 .get()
                 .header("User-Agent", USER_AGENT)
-                .header("Accept", "image/*,*/*;q=0.8")
-                .build()
+                .header("Referer", referer)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Sec-Fetch-Dest", "image")
+                .header("Sec-Fetch-Mode", "no-cors")
+                .header("Sec-Fetch-Site", "cross-site")
 
-            val response = httpClient.executeAsync(request)
+            if (existingBytes > 0) {
+                requestBuilder.header("Range", "bytes=$existingBytes-")
+                onLog("Attempting resume from existing staging bytes: $existingBytes")
+            }
+
+            val response = httpClient.executeAsync(requestBuilder.build())
             if (!response.isSuccessful) {
                 val code = response.code
                 response.close()
-                return@withContext Result.failure(Exception("HTTP $code: Failed to download image stream"))
+                return@withContext Result.failure(Exception("HTTP $code: Failed to download image stream from $imageUrl"))
             }
 
             val body = response.body ?: run {
@@ -75,8 +137,17 @@ object ImageDownloader {
                 return@withContext Result.failure(Exception("Response body is null"))
             }
 
+            val isPartialContent = response.code == 206
+            val appendMode = isPartialContent && existingBytes > 0
+            var bytesCopied = if (appendMode) existingBytes else 0L
+            val bodyLength = body.contentLength()
+            val totalBytes = if (appendMode) {
+                if (bodyLength > 0) existingBytes + bodyLength else -1L
+            } else {
+                bodyLength
+            }
+
             val rawContentType = response.header("Content-Type").orEmpty().lowercase()
-            val totalBytes = body.contentLength()
 
             val ext = when {
                 !customExt.isNullOrBlank() -> customExt.removePrefix(".")
@@ -93,20 +164,15 @@ object ImageDownloader {
                 else -> "jpg"
             }
 
-            val sanitizedTitle = FilenameFormatter.sanitize(suggestedTitle.ifBlank { "image_${System.currentTimeMillis()}" })
             val finalFilename = "$sanitizedTitle.$ext"
 
-            val stagingDir = File(context.cacheDir, "staging_downloads").apply { if (!exists()) mkdirs() }
-            tempFile = File(stagingDir, "img_${System.currentTimeMillis()}_${sanitizedTitle.take(20)}.$ext.tmp")
-
-            onLog("Saving image to staging file: ${tempFile.name} (Expected size: ${if (totalBytes > 0) "$totalBytes bytes" else "Unknown"})")
+            onLog("Streaming image to staging file: ${tempFile.name} (Expected size: ${if (totalBytes > 0) "$totalBytes bytes" else "Unknown"}, appendMode=$appendMode)")
 
             val inputStream = body.byteStream()
-            val outputStream = FileOutputStream(tempFile)
+            val outputStream = FileOutputStream(tempFile, appendMode)
             val buffer = ByteArray(32 * 1024)
-            var bytesCopied = 0L
             var lastProgressTime = System.currentTimeMillis()
-            var bytesAtLastInterval = 0L
+            var bytesAtLastInterval = bytesCopied
 
             try {
                 var bytesRead: Int
@@ -114,19 +180,20 @@ object ImageDownloader {
                     if (isCancelled()) {
                         outputStream.close()
                         inputStream.close()
+                        response.close()
                         tempFile.delete()
                         onLog("Download cancelled by user.")
-                        return@withContext Result.failure(Exception("Download cancelled"))
+                        return@withContext Result.failure(CancellationException("Download cancelled"))
                     }
 
-                    while (isPaused()) {
-                        delay(200)
-                        if (isCancelled()) {
-                            outputStream.close()
-                            inputStream.close()
-                            tempFile.delete()
-                            return@withContext Result.failure(Exception("Download cancelled"))
-                        }
+                    if (isPaused()) {
+                        isPausedInterrupted = true
+                        onLog("Download paused by user. Gracefully releasing network socket and preserving partial stream.")
+                        outputStream.flush()
+                        outputStream.close()
+                        inputStream.close()
+                        response.close()
+                        return@withContext Result.failure(Exception("Download paused"))
                     }
 
                     outputStream.write(buffer, 0, bytesRead)
@@ -161,7 +228,7 @@ object ImageDownloader {
             onProgress(100f, bytesCopied, bytesCopied, 0.0, 0L)
             onLog("Image stream received successfully (${bytesCopied} bytes). Validating header...")
 
-            // Basic validation
+            // Basic magic byte validation
             val validation = validateImageFile(tempFile)
             if (validation.isFailure) {
                 tempFile.delete()
@@ -199,7 +266,11 @@ object ImageDownloader {
                 )
             )
         } catch (e: Exception) {
-            tempFile?.delete()
+            if (e is CancellationException || isCancelled()) {
+                tempFile?.delete()
+            } else if (!isPausedInterrupted && e.message != "Download paused") {
+                tempFile?.delete()
+            }
             AppLogger.e("ImageDownloader", "Image download failed: ${e.message}")
             Result.failure(e)
         }

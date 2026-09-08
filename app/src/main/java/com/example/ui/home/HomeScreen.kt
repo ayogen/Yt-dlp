@@ -503,11 +503,8 @@ fun HomeScreen(viewModel: MainViewModel) {
     // Bottom Sheet for Media Analysis
     if (analysisState is AnalysisUiState.Success) {
         val successState = analysisState as AnalysisUiState.Success
-        val uiModel = remember(successState.collection) {
-            MediaUiMapper.mapCollectionToUiModel(successState.collection)
-        }
         MediaAnalysisBottomSheet(
-            uiModel = uiModel,
+            collection = successState.collection,
             onDismiss = { viewModel.clearAnalysis() },
             onDownload = { format, mediaType, container, bitrate, embedSubs, embedThumb, selectedIndices ->
                 val quality = format?.displayResolution ?: "Best"
